@@ -224,6 +224,26 @@ function bellClick(idx,sp){
 }
 
 // ── PHYSICS ────────────────────────────────────────────────
+// ── SPEECH ───────────────────────────────────────────────────
+var lastSpeech = 0;
+var lastTap = 0;
+function sayWhoseThere() {
+  if (!window.speechSynthesis) return;
+  var now = performance.now();
+  if (now - lastSpeech < 3000) return;
+  lastSpeech = now;
+  var utt = new SpeechSynthesisUtterance("who's there?");
+  utt.pitch = 0.85; utt.rate = 0.9; utt.volume = 1.0;
+  window.speechSynthesis.speak(utt);
+}
+function onTap() {
+  var now = performance.now();
+  var gap = now - lastTap;
+  lastTap = now;
+  // Double tap: two taps within 400ms
+  if (gap < 400 && gap > 60) sayWhoseThere();
+}
+
 var wBellCd={};
 function wallBell(bid,ni,sp){
   var now=performance.now();
@@ -419,6 +439,12 @@ document.getElementById('ic-reset').addEventListener('click',function(){initBall
 
 resize();
 loop();
+
+// Hard tap on screen → "who's there?"
+// touchstart gives fastest response; force API on iOS if available
+cv.addEventListener('touchstart', function(e) {
+  onTap();
+}, { passive: true });
 </script>
 
 </body>

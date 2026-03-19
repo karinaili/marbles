@@ -74,7 +74,7 @@ function initAudio() {
   comp.release.value = 0.2;
 
   master = AC.createGain();
-  master.gain.value = 0.65;
+  master.gain.value = 0.45;
   master.connect(comp);
   comp.connect(AC.destination);
 
@@ -99,10 +99,10 @@ function initAudio() {
 // ── Noise click (maracas / shaker / rain / seeds) ───
 // vol, freq, Q, dur all tiny
 const NOISE_MODES = {
-  maracas: { vol:0.20, freq:4200, q:1.6, dur:0.009 },
-  shaker:  { vol:0.17, freq:6800, q:1.1, dur:0.006 },
-  rain:    { vol:0.18, freq:1200, q:0.55,dur:0.022 },
-  seeds:   { vol:0.19, freq:2600, q:2.8, dur:0.011 },
+  maracas: { vol:0.14, freq:4400, q:1.5, dur:0.008 },
+  shaker:  { vol:0.12, freq:7000, q:1.0, dur:0.005 },
+  rain:    { vol:0.13, freq:1300, q:0.5, dur:0.018 },
+  seeds:   { vol:0.13, freq:2800, q:2.5, dur:0.009 },
 };
 
 function noiseClick(p, vel) {
@@ -158,7 +158,7 @@ function bellRing(noteIdx, vel, isWall) {
   mod.connect(modG); modG.connect(car.frequency);
 
   // Volume envelope: instant attack, long decay (bell lingering)
-  const vol = (isWall ? 0.18 : 0.10) * (0.3 + vel * 0.7);
+  const vol = (isWall ? 0.11 : 0.06) * (0.3 + vel * 0.7);
   const dec = isWall ? (0.4 + vel * 0.5) : (0.2 + vel * 0.3);
   carE.gain.setValueAtTime(vol, now);
   carE.gain.exponentialRampToValueAtTime(0.0001, now + dec);
@@ -171,46 +171,47 @@ function bellRing(noteIdx, vel, isWall) {
 // ── Mode state ──────────────────────────────────────
 let modeName = 'maracas';
 
-// ── Cooldowns ───────────────────────────────────────
-const wallCd = new Map();
-const ballCd = new Map();
-const WALL_CD_MS = 55;
-const BALL_CD_MS = 70; // slightly longer for ball-ball
+// ── Sound queue: max 3 per frame, loudest wins ──────
+const HIT_QUEUE = [];
+const MAX_PER_FRAME = 3;
+const hitCd = new Map();       // per-pair cooldown
+const WALL_CD_MS = 80;
+const BALL_CD_MS = 120;
+
+function qHit(key, cdMs, vel, isWall, noteIdx) {
+  const now = performance.now();
+  if (now - (hitCd.get(key)||0) < cdMs) return;
+  if (vel < 0.07) return;
+  hitCd.set(key, now);
+  HIT_QUEUE.push({ vel, isWall, noteIdx });
+}
 
 function wallHit(bid, side, speed) {
   if (muted || !AC) return;
-  const key = bid * 4 + side;
-  const now = performance.now();
-  if (now - (wallCd.get(key)||0) < WALL_CD_MS) return;
-  wallCd.set(key, now);
-  const vel = Math.min(1, speed * 0.09);
-  if (vel < 0.06) return;
-
-  if (modeName === 'bells') {
-    bellRing(bid, vel, true);
-  } else {
-    noiseClick(NOISE_MODES[modeName] || NOISE_MODES.maracas, vel);
-  }
+  qHit(bid*4+side, WALL_CD_MS, Math.min(1, speed*0.09), true, bid);
 }
 
 function ballHit(aid, bid, speed) {
   if (muted || !AC) return;
-  const key = Math.min(aid,bid) * 10000 + Math.max(aid,bid);
-  const now = performance.now();
-  if (now - (ballCd.get(key)||0) < BALL_CD_MS) return;
-  ballCd.set(key, now);
-  const vel = Math.min(1, speed * 0.07);
-  if (vel < 0.07) return;
+  const key = 1e6 + Math.min(aid,bid)*1000 + Math.max(aid,bid);
+  qHit(key, BALL_CD_MS, Math.min(0.7, speed*0.07), false,
+       Math.floor((aid+bid)/2));
+}
 
-  if (modeName === 'bells') {
-    // Ball-ball: play the softer note (average of two ball indices)
-    bellRing(Math.floor((aid + bid) / 2), vel * 0.7, false);
-  } else {
-    // Ball-ball: same sound but quieter
-    const p = { ...( NOISE_MODES[modeName] || NOISE_MODES.maracas ) };
-    p.vol *= 0.55; // noticeably quieter than wall hits
-    p.dur *= 0.75;
-    noiseClick(p, vel);
+function flushHits() {
+  if (!HIT_QUEUE.length) return;
+  // Sort descending by vel, play only top MAX_PER_FRAME
+  HIT_QUEUE.sort((a,b) => b.vel - a.vel);
+  const play = HIT_QUEUE.splice(0, MAX_PER_FRAME);
+  HIT_QUEUE.length = 0;
+  for (const h of play) {
+    if (modeName === 'bells') {
+      bellRing(h.noteIdx, h.vel * (h.isWall ? 1 : 0.6), h.isWall);
+    } else {
+      const p = Object.assign({}, NOISE_MODES[modeName] || NOISE_MODES.maracas);
+      if (!h.isWall) { p.vol *= 0.45; p.dur *= 0.7; }
+      noiseClick(p, h.vel);
+    }
   }
 }
 
@@ -324,6 +325,7 @@ function draw() {
 function loop() {
   requestAnimationFrame(loop);
   physicsStep();
+  flushHits();
   draw();
 }
 

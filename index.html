@@ -160,7 +160,7 @@ function bellNote(ballId,vel) {
 // Collects all collisions this frame, plays only the 2 loudest
 const hitQ=[];
 const hitCd=new Map();
-const WALL_CD=90, BALL_CD=130; // ms cooldown per pair
+const WALL_CD=70, BALL_CD=110; // ms cooldown per pair
 
 function queueHit(key,cdMs,vel,ballId) {
   const now=performance.now();
@@ -174,7 +174,7 @@ function flushHits() {
   if(!hitQ.length) return;
   hitQ.sort((a,b)=>b.vel-a.vel);
   // Play max 2 — enough to feel present, not enough to overload
-  const n=Math.min(2,hitQ.length);
+  const n=Math.min(3,hitQ.length);
   for(let i=0;i<n;i++){
     const h=hitQ[i];
     if(modeName==='bells') bellNote(h.ballId,h.vel);
@@ -191,7 +191,7 @@ const ctx=cv.getContext('2d');
 let W=0,H=0,dpr=1;
 let GX=0,GY=0.38;
 
-const BALL_N  = 22;   // few enough that each hit is audible
+const BALL_N  = 55;   // more but small
 const REST    = 0.52;
 const FRIC    = 0.996; // low friction = lively
 const SUBSTEPS= 3;
@@ -208,7 +208,7 @@ const PALETTES={
 let palFn=PALETTES.maracas;
 
 function mkBall(i){
-  const r=4+Math.random()*5; // larger — clearer individual hits
+  const r=2+Math.random()*2.5; // small seeds
   const p=palFn();
   return{
     id:i, x:r+Math.random()*(W-r*2), y:r+Math.random()*(H*0.5),

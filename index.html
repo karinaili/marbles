@@ -55,53 +55,65 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;}
 'use strict';
 
 // ═══════════════════════════════════════════════════════
-//  AUDIO ENGINE — granular collision model
-//  Physics: jerk → smoothed energy → grain probability
-//  Each grain = independent noise burst, short, random
+//  PHYSICS OF A MARACA — three-layer model:
+//
+//  1. TRANSIENT  — the sharp "thwack" when seeds hit the far wall
+//     Triggered by peak jerk (direction reversal).
+//     Loud, bright, very short (5-10ms).
+//
+//  2. TAIL       — seeds scattering after impact
+//     Triggered by transient, decays over 80-200ms.
+//     Mid-frequency, getting quieter and softer.
+//
+//  3. RUSTLE     — continuous soft friction between seeds
+//     Driven by sustained velocity (not just jerk).
+//     Very quiet, always present when moving.
 // ═══════════════════════════════════════════════════════
 let AC = null, master = null, muted = false;
-let noiseBuf = null;   // pre-built noise pool
+let noiseBuf = null;
 
-// Motion state — written by devicemotion handler
+// Motion state
 const mot = {
   ax:0, ay:0, az:0,
-  pax:0, pay:0, paz:0,  // previous frame
-  energy:0,             // smoothed jerk magnitude 0–1
-  raw:0,
+  pax:0, pay:0, paz:0,
+  velocity:0,      // smoothed speed magnitude
+  jerk:0,          // instantaneous jerk magnitude
+  peakJerk:0,      // recent peak jerk (for transient detection)
+  jerkDecay:0,     // smoothed jerk for tail
+  prevJerk:0,
 };
 
-// Grain scheduler — fired directly from devicemotion callback (~60Hz)
-let grainTimer = null; // unused, kept for compat
-const GRAIN_INTERVAL_MS = 3;
-
-// Pentatonic for bells
-const PENTA = [523.25,587.33,659.25,783.99,880.00,
-               1046.5,1174.7,1318.5,1568.0,1760.0];
+// Pentatonic C5 for bells
+const PENTA = [523.25,587.33,659.25,783.99,880.00,1046.5,1174.7,1318.5,1568.0,1760.0];
 const bellCd = new Map();
 
-// Mode definitions
+// Mode configs
 const MODES_CFG = {
-  maracas:{ fLo:3500, fHi:6500, q:1.4, durLo:0.006, durHi:0.014, vol:0.28, isBell:false },
-  shaker: { fLo:5500, fHi:9000, q:0.9, durLo:0.004, durHi:0.009, vol:0.22, isBell:false },
-  rain:   { fLo:800,  fHi:2200, q:0.5, durLo:0.015, durHi:0.035, vol:0.26, isBell:false },
-  seeds:  { fLo:2000, fHi:4500, q:2.5, durLo:0.007, durHi:0.016, vol:0.24, isBell:false },
-  bells:  { fLo:0,    fHi:0,    q:0,   durLo:0,     durHi:0,     vol:0.16, isBell:true  },
+  maracas:{ fLo:3800, fHi:7000, q:1.4, transVol:1.8, tailVol:0.9, rustleVol:0.35, tailDur:0.18, isBell:false },
+  shaker: { fLo:5500, fHi:9500, q:1.0, transVol:1.5, tailVol:0.7, rustleVol:0.28, tailDur:0.12, isBell:false },
+  rain:   { fLo:700,  fHi:2000, q:0.5, transVol:1.2, tailVol:1.1, rustleVol:0.40, tailDur:0.35, isBell:false },
+  seeds:  { fLo:2200, fHi:4800, q:2.2, transVol:1.6, tailVol:0.8, rustleVol:0.30, tailDur:0.20, isBell:false },
+  bells:  { fLo:0,    fHi:0,    q:0,   transVol:0,   tailVol:0,   rustleVol:0,    tailDur:0,    isBell:true  },
 };
 let cfg = MODES_CFG.maracas;
 let modeName = 'maracas';
+
+// ── Debug ────────────────────────────────────────────
+let grainCount = 0, motionOn = false;
 
 function initAudio() {
   if (AC) return;
   AC = new (window.AudioContext || window.webkitAudioContext)();
 
-  // Gentle compressor — musical glue only
   const comp = AC.createDynamicsCompressor();
-  comp.threshold.value = -22; comp.knee.value = 16;
-  comp.ratio.value = 3;       comp.attack.value = 0.004;
-  comp.release.value = 0.20;
+  comp.threshold.value = -16; comp.knee.value = 10;
+  comp.ratio.value = 4;       comp.attack.value = 0.003;
+  comp.release.value = 0.15;
 
-  master = AC.createGain(); master.gain.value = 1.2;
-  master.connect(comp); comp.connect(AC.destination);
+  master = AC.createGain();
+  master.gain.value = 1.6;  // loud enough to be clearly audible
+  master.connect(comp);
+  comp.connect(AC.destination);
 
   // iOS speaker unlock
   const sb = AC.createBuffer(1,1,AC.sampleRate);
@@ -110,68 +122,118 @@ function initAudio() {
   if (AC.state==='suspended') AC.resume();
 
   buildNoise();
-  startGrainScheduler();
 }
 
 function buildNoise() {
-  // Larger buffer = more variety between grains
   const sr = AC.sampleRate, len = sr * 2;
   noiseBuf = AC.createBuffer(1, len, sr);
   const d = noiseBuf.getChannelData(0);
-  // Pink-ish noise
   let b0=0,b1=0,b2=0,b3=0,b4=0;
   for (let i=0;i<len;i++){
-    const w = Math.random()*2-1;
+    const w=Math.random()*2-1;
     b0=.99886*b0+w*.0555; b1=.99332*b1+w*.0751;
     b2=.96900*b2+w*.1539; b3=.86650*b3+w*.3105;
     b4=.55000*b4+w*.5330;
-    d[i] = (b0+b1+b2+b3+b4) * 0.11;
+    d[i]=(b0+b1+b2+b3+b4)*0.11;
   }
 }
 
-// Fire one grain: random offset in noise pool, bandpass, instant-on decay
-let grainCount = 0;
-let motionOn = false;
-function grain(velScale) {
+// ── Single noise burst (used for all three layers) ──
+// freq, Q, vol, attack, decay all customisable
+function burst(freq, Q, vol, atk, dec) {
+  if (!AC || !noiseBuf || muted || vol < 0.001) return;
   grainCount++;
-  if (!AC || !noiseBuf || muted) return;
   const now = AC.currentTime;
-  const m = cfg;
-
-  // Random slice of noise buffer — ensures every grain sounds unique
-  const bufDur = noiseBuf.duration;
-  const sliceLen = 0.015 + Math.random() * 0.025;
-  const offset = Math.random() * (bufDur - sliceLen);
+  const off = Math.random() * (noiseBuf.duration - 0.05);
 
   const src = AC.createBufferSource();
   src.buffer = noiseBuf;
-  src.loopStart = offset;
-  src.loopEnd   = offset + sliceLen;
+  src.loopStart = off;
+  src.loopEnd   = off + 0.04 + Math.random() * 0.03;
   src.loop = true;
-  // Playback rate variation → pitch color
-  src.playbackRate.value = 0.75 + Math.random() * 0.55;
+  src.playbackRate.value = 0.7 + Math.random() * 0.6;
 
-  // Bandpass: random freq within mode range
   const bp = AC.createBiquadFilter();
   bp.type = 'bandpass';
-  bp.frequency.value = m.fLo + Math.random() * (m.fHi - m.fLo);
-  bp.Q.value = m.q * (0.55 + Math.random() * 0.9);
+  bp.frequency.value = freq * (0.85 + Math.random() * 0.3);
+  bp.Q.value = Q * (0.6 + Math.random() * 0.8);
 
   const env = AC.createGain();
-  // Volume: scales with energy, plus per-grain random variation ±25%
-  const vol = m.vol * velScale * (1.4 + Math.random() * 0.8);
-  // Duration: scales with energy — harder shake = slightly longer grains
-  const dur = m.durLo + Math.random() * (m.durHi - m.durLo);
-
-  env.gain.setValueAtTime(vol, now);
-  env.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+  if (atk < 0.001) {
+    env.gain.setValueAtTime(vol, now);
+  } else {
+    env.gain.setValueAtTime(0, now);
+    env.gain.linearRampToValueAtTime(vol, now + atk);
+  }
+  env.gain.exponentialRampToValueAtTime(0.0001, now + atk + dec);
 
   src.connect(bp); bp.connect(env); env.connect(master);
-  src.start(now);
-  src.stop(now + dur + 0.002);
+  src.start(now); src.stop(now + atk + dec + 0.005);
 }
 
-// Bell FM note
+// ── LAYER 1: TRANSIENT ───────────────────────────────
+// Sharp bright click — seeds hitting far wall all at once
+// Very short (6-12ms), high frequency, loud
+function fireTransient(strength) {
+  const m = cfg;
+  // Main crack
+  burst(
+    m.fHi * (0.9 + strength * 0.2),  // very bright
+    m.q * 0.8,
+    m.transVol * strength * (0.8 + Math.random() * 0.4),
+    0.0005,   // near-instant attack
+    0.006 + strength * 0.006   // 6-12ms decay
+  );
+  // Second harmonic layer slightly lower — body of impact
+  burst(
+    m.fLo * (1.1 + strength * 0.3),
+    m.q * 1.2,
+    m.transVol * strength * 0.6,
+    0.001,
+    0.009 + strength * 0.008
+  );
+}
+
+// ── LAYER 2: TAIL ────────────────────────────────────
+// Seeds scattering after impact — 3-6 staggered bursts
+// Getting quieter and softer over 80-200ms
+function fireTail(strength) {
+  const m = cfg;
+  const nBursts = 3 + Math.floor(strength * 4);
+  for (let i = 0; i < nBursts; i++) {
+    const t = i * (0.012 + Math.random() * 0.015);
+    const decay = t / (nBursts * 0.02); // 0→1 as i grows
+    const vol = m.tailVol * strength * (0.7 - decay * 0.5) * (0.5 + Math.random() * 0.5);
+    const freq = m.fLo + Math.random() * (m.fHi - m.fLo) * (1 - decay * 0.4);
+    if (vol < 0.02) continue;
+    // Delayed — simulate seeds arriving at walls over time
+    setTimeout(() => burst(freq, m.q, vol, 0.001, 0.015 + Math.random() * 0.025), t * 1000);
+  }
+}
+
+// ── LAYER 3: RUSTLE ──────────────────────────────────
+// Continuous soft friction — seeds sliding against each other
+// Very quiet, mid-frequency, fired from onMotion when velocity > 0
+let lastRustle = 0;
+function maybeRustle(velocity) {
+  const m = cfg;
+  if (m.rustleVol < 0.01) return;
+  const now = performance.now();
+  const interval = Math.max(25, 120 - velocity * 80); // faster motion = more frequent
+  if (now - lastRustle < interval) return;
+  lastRustle = now;
+  const vol = m.rustleVol * velocity * (0.3 + Math.random() * 0.4);
+  if (vol < 0.01) return;
+  burst(
+    m.fLo * (0.6 + Math.random() * 0.6),
+    m.q * 0.5,
+    vol,
+    0.003,
+    0.018 + Math.random() * 0.022
+  );
+}
+
+// ── Bell ─────────────────────────────────────────────
 function bellNote(noteIdx, vel) {
   if (!AC || muted) return;
   const now = performance.now();
@@ -180,63 +242,55 @@ function bellNote(noteIdx, vel) {
   if (vel < 0.15) return;
   const t = AC.currentTime;
   const freq = PENTA[noteIdx % PENTA.length];
-  const mod = AC.createOscillator(), modG = AC.createGain();
-  const car = AC.createOscillator(), carE = AC.createGain();
-  mod.frequency.value = freq * 2.756; car.frequency.value = freq;
+  const mod=AC.createOscillator(), modG=AC.createGain();
+  const car=AC.createOscillator(), carE=AC.createGain();
+  mod.frequency.value=freq*2.756; car.frequency.value=freq;
   modG.gain.setValueAtTime(freq*vel*2.5,t);
   modG.gain.exponentialRampToValueAtTime(0.001,t+0.18);
   mod.connect(modG); modG.connect(car.frequency);
-  const vol = 0.16*(0.4+vel*0.6), dec = 0.4+vel*0.6;
+  const vol=0.28*(0.4+vel*0.6), dec=0.4+vel*0.6;
   carE.gain.setValueAtTime(vol,t);
   carE.gain.exponentialRampToValueAtTime(0.0001,t+dec);
   car.connect(carE); carE.connect(master);
   mod.start(t); car.start(t); mod.stop(t+dec+.05); car.stop(t+dec+.05);
 }
 
-// ── Grain scheduler ──────────────────────────────────
-// Runs every GRAIN_INTERVAL_MS ms, independent of rAF.
-// Uses energy to compute Poisson-process probability of a grain this tick.
-//
-// At energy=0 → 0 grains/sec
-// At energy=1 → ~120 grains/sec (sounds like dense maracas)
-// Each tick checks: Math.random() < (energy * maxRate * dt)
-
-const MAX_GRAINS_PER_SEC = 220; // scaled for 165 balls
-
-function startGrainScheduler() {
-  // No-op: grains are fired from onMotion directly
-}
-
-// Called from onMotion — fires grains based on current energy
-// devicemotion fires ~60Hz → dt ≈ 0.016s per call
-function maybeFireGrains() {
-  if (!AC || muted || cfg.isBell) return;
-  const e = mot.energy;
-  if (e < 0.015) return;
-  const dt = 0.016;
-  const prob = e * MAX_GRAINS_PER_SEC * dt;
-  if (Math.random() < prob)                        grain(e);
-  if (prob > 0.5 && Math.random() < (prob - 0.5)) grain(e * 0.75);
-  if (prob > 1.2 && Math.random() < (prob - 1.2)) grain(e * 0.55);
-}
-
 // ── Motion processing ────────────────────────────────
-// jerk = magnitude of delta-acceleration
-// This captures the "snap" of the wrist — the physical cause of collisions
+let transientCd = 0;
+const TRANSIENT_CD_MS = 80; // min gap between transients
+
 function processMotion(ax, ay, az) {
-  const jx = ax - mot.pax, jy = ay - mot.pay, jz = az - mot.paz;
-  const jerk = Math.sqrt(jx*jx + jy*jy + jz*jz);
+  // Jerk = change in acceleration = what causes seed collisions
+  const djx = ax - mot.pax, djy = ay - mot.pay, djz = az - mot.paz;
+  const jerk = Math.sqrt(djx*djx + djy*djy + djz*djz);
   mot.pax=ax; mot.pay=ay; mot.paz=az;
-  mot.ax=ax; mot.ay=ay; mot.az=az;
 
-  // Raw energy from jerk (not just magnitude — jerk is what moves particles)
-  mot.raw = Math.min(1, jerk * 0.085);
+  // Velocity = smoothed acceleration magnitude (sustain layer)
+  const accelMag = Math.sqrt(ax*ax + ay*ay + az*az);
+  const speed = Math.max(0, accelMag - 9.5) * 0.12; // subtract gravity
+  mot.velocity = mot.velocity * 0.75 + speed * 0.25;
 
-  // Asymmetric smoothing:
-  // - Attack fast  (particles accelerate quickly)  α=0.45
-  // - Release slow (particles coast and settle)    α=0.032
-  const alpha = mot.raw > mot.energy ? 0.45 : 0.032;
-  mot.energy = mot.energy + (mot.raw - mot.energy) * alpha;
+  // Jerk smoothed for tail/rustle
+  mot.jerkDecay = mot.jerkDecay * 0.82 + jerk * 0.18;
+  mot.jerk = jerk;
+
+  const now = performance.now();
+
+  if (!AC || muted || cfg.isBell) return;
+
+  // ── TRANSIENT: fired on jerk spike ──────────────────
+  // A true maraca "hit" happens when jerk exceeds threshold
+  // (direction reversal of the wrist)
+  const jerkNorm = Math.min(1, jerk * 0.045);
+  if (jerkNorm > 0.28 && now - transientCd > TRANSIENT_CD_MS) {
+    transientCd = now;
+    fireTransient(jerkNorm);
+    fireTail(jerkNorm);
+  }
+
+  // ── RUSTLE: always present when moving ──────────────
+  const velNorm = Math.min(1, mot.velocity);
+  if (velNorm > 0.08) maybeRustle(velNorm);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -286,7 +340,6 @@ function resize(){
 }
 window.addEventListener('resize',()=>{ ctx.setTransform(1,0,0,1,0,0); resize(); });
 
-// Bell hits — only for bells mode, only big wall collisions
 const wallBellCd = new Map();
 function wallBell(bid, noteIdx, speed){
   if(modeName!=='bells') return;
@@ -344,8 +397,6 @@ function onMotion(e){
   const a = e.accelerationIncludingGravity || {};
   const ax=a.x||0, ay=a.y||0, az=a.z||0;
   processMotion(ax,ay,az);
-  maybeFireGrains(); // fire grains here — we have fresh energy data
-  // Physics gravity from orientation (separate from jerk)
   GX=Math.max(-.9,Math.min(.9, ax*.062));
   GY=Math.max(-.9,Math.min(.9,-ay*.062));
 }
@@ -360,8 +411,8 @@ document.body.appendChild(dbg);
 setInterval(()=>{
   dbg.innerHTML=
     'AC: '+(AC?AC.state:'null')+'<br>'+
-    'energy: '+mot.energy.toFixed(3)+'<br>'+
-    'raw: '+mot.raw.toFixed(3)+'<br>'+
+    'jerk: '+mot.jerk.toFixed(2)+'<br>'+
+    'vel: '+mot.velocity.toFixed(3)+'<br>'+
     'grains: '+grainCount+'<br>'+
     'motion: '+(motionOn?'YES':'NO');
 },200);
@@ -374,7 +425,8 @@ document.getElementById('splash').addEventListener('click', async ()=>{
       const r=await DeviceMotionEvent.requestPermission();
       if(r!=='granted') throw new Error('denied');
     }
-    window.addEventListener('devicemotion',onMotion,{passive:true}); motionOn=true;
+    window.addEventListener('devicemotion',onMotion,{passive:true});
+    motionOn=true;
   }catch(e){ console.warn('Motion:',e.message); }
   document.getElementById('splash').classList.add('gone');
   document.getElementById('strip').classList.add('show');
@@ -394,7 +446,7 @@ document.querySelectorAll('.chip').forEach(btn=>{
 
 document.getElementById('ic-mute').addEventListener('click',()=>{
   muted=!muted;
-  if(master) master.gain.value=muted?0:0.68;
+  if(master) master.gain.value=muted?0:1.6;
   document.getElementById('ic-mute').textContent=muted?'✕':'♪';
   document.getElementById('ic-mute').classList.toggle('on',!muted);
 });

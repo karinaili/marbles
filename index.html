@@ -90,7 +90,7 @@ function initAudio() {
   const comp = AC.createDynamicsCompressor();
   comp.threshold.value=-18; comp.knee.value=12;
   comp.ratio.value=4; comp.attack.value=0.003; comp.release.value=0.15;
-  master = AC.createGain(); master.gain.value = 1.8;
+  master = AC.createGain(); master.gain.value = 2.2;
   master.connect(comp); comp.connect(AC.destination);
   const sb=AC.createBuffer(1,1,AC.sampleRate);
   const ss=AC.createBufferSource(); ss.buffer=sb;
@@ -139,10 +139,12 @@ function fireTransient(jerkNorm) {
   const now=AC.currentTime;
   const m=cfg;
   const vol = 1.6 * jerkNorm;
-  // Main crack — bright, instant-on, 8-15ms
-  scheduleBurst(now, m.fHi*(0.85+jerkNorm*0.3), m.q*0.7, vol, 0.008+jerkNorm*0.007);
-  // Body — slightly lower, 10-20ms
-  scheduleBurst(now, m.fLo*(1.2+jerkNorm*0.4), m.q*1.1, vol*0.6, 0.010+jerkNorm*0.010);
+  // Crack: instant, very short (4-8ms), loud
+  scheduleBurst(now, m.fHi*(0.9+jerkNorm*0.2), m.q*0.6, vol*1.4, 0.004+jerkNorm*0.004);
+  // Body: slightly longer body
+  scheduleBurst(now, m.fLo*(1.1+jerkNorm*0.3), m.q*1.0, vol*0.9, 0.007+jerkNorm*0.008);
+  // Sub-crack: tiny second hit 3ms later (seeds arriving slightly after)
+  scheduleBurst(now+0.003, m.fHi*(0.7+jerkNorm*0.4), m.q*0.8, vol*0.5, 0.005+jerkNorm*0.003);
 }
 
 // ── TAIL: seeds scattering — scheduled ahead using AC time ──
@@ -165,14 +167,14 @@ function fireTail(jerkNorm) {
 function maybeRustle(velNorm) {
   if(velNorm<0.06) return;
   const now=performance.now();
-  const interval=Math.max(20, 90-velNorm*65);
+  const interval=Math.max(8, 38-velNorm*28);
   if(now-lastRustle<interval) return;
   lastRustle=now;
   const m=cfg;
-  const vol=0.22*velNorm*(0.3+Math.random()*0.5);
+  const vol=0.42*velNorm*(0.35+Math.random()*0.55);
   scheduleBurst(
     AC.currentTime,
-    m.fLo*(0.5+Math.random()*0.8), m.q*0.45,
+    m.fLo*(0.8+Math.random()*1.2), m.q*0.7,
     vol, 0.016+Math.random()*0.024
   );
 }
@@ -217,9 +219,9 @@ function processMotion(ax,ay,az) {
   // TRANSIENT threshold: raw jerk > 1.5 (was 0.28*normalised)
   // At jerk=2 → fires. At jerk=10 (hard shake) → loud.
   const now=performance.now();
-  if(jerk>1.4 && now-lastTransient>75) {
+  if(jerk>0.8 && now-lastTransient>55) {
     lastTransient=now;
-    const strength=Math.min(1, jerk*0.08); // 1.4→0.11, 10→0.8, 20→1.0
+    const strength=Math.min(1, jerk*0.12); // 0.8→0.10, 2→0.24, 10→1.0
     fireTransient(strength);
     fireTail(strength);
   }

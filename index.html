@@ -224,6 +224,14 @@ function bellClick(idx,sp){
 }
 
 // ── PHYSICS ────────────────────────────────────────────────
+var wBellCd={};
+function wallBell(bid,ni,sp){
+  var now=performance.now();
+  if(now-(wBellCd[bid]||0)<160) return;
+  wBellCd[bid]=now;
+  bellClick(ni,sp);
+}
+
 var cv=document.getElementById('cv');
 var ctx=cv.getContext('2d');
 var W=0,H=0,dpr=1,GX=0,GY=0.38;
@@ -268,10 +276,10 @@ function physicsStep(){
     }
     for(var i=0;i<balls.length;i++){
       var b=balls[i];
-      if(b.x-b.r<0){b.x=b.r;b.vx=Math.abs(b.vx)*REST;}
-      else if(b.x+b.r>W){b.x=W-b.r;b.vx=-Math.abs(b.vx)*REST;}
-      if(b.y-b.r<0){b.y=b.r;b.vy=Math.abs(b.vy)*REST;}
-      else if(b.y+b.r>H){b.y=H-b.r;b.vy=-Math.abs(b.vy)*REST;}
+      if(b.x-b.r<0){var sp=Math.abs(b.vx);b.x=b.r;b.vx=sp*REST;if(modeName==='bells')wallBell(b.id,b.ni,sp);}
+      else if(b.x+b.r>W){var sp=Math.abs(b.vx);b.x=W-b.r;b.vx=-sp*REST;if(modeName==='bells')wallBell(b.id,b.ni,sp);}
+      if(b.y-b.r<0){var sp=Math.abs(b.vy);b.y=b.r;b.vy=sp*REST;if(modeName==='bells')wallBell(b.id,b.ni,sp);}
+      else if(b.y+b.r>H){var sp=Math.abs(b.vy);b.y=H-b.r;b.vy=-sp*REST;if(modeName==='bells')wallBell(b.id,b.ni,sp);}
     }
     for(var i=0;i<balls.length;i++){
       for(var j=i+1;j<balls.length;j++){

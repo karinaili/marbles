@@ -27,6 +27,7 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;}
 .ic{width:30px;height:30px;border-radius:50%;border:1px solid rgba(255,255,255,.12);background:transparent;color:rgba(255,255,255,.3);font-size:11px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .15s;}
 .ic.on{border-color:rgba(255,255,255,.4);color:rgba(255,255,255,.7);}
 .mode-name{font-family:'Cormorant Garamond',serif;font-style:italic;font-weight:300;font-size:17px;letter-spacing:.1em;color:rgba(255,255,255,.22);min-width:70px;text-align:center;}
+#dbg{position:fixed;top:10px;left:10px;z-index:99;font:10px monospace;color:lime;pointer-events:none;line-height:1.7;text-shadow:0 0 3px #000;}
 </style>
 </head>
 <body>
@@ -36,6 +37,7 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;}
   <div class="tap-hint">tap</div>
 </div>
 <canvas id="cv"></canvas>
+<div id="dbg"></div>
 <div id="strip">
   <div class="chips">
     <button class="chip active" data-mode="maracas">maracas</button>
@@ -53,311 +55,367 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;}
 
 <script>
 'use strict';
+// ═══════════════════════════════════════════════════════
+//  ARCHITECTURE:
+//  motion → energy → gesture detection → triggerBurst()
+//           → grains (clustered, random offset) + shell click
+//  NO continuous noise. NO per-frame sound.
+// ═══════════════════════════════════════════════════════
 
-// ══════════════════════════════════════════════════════
-//  MARACA PHYSICS — correct model:
-//
-//  devicemotion fires ~60Hz. Each call we measure jerk.
-//  Jerk accumulates in a "charge" buffer.
-//  Every call: discharge charge → fire N simultaneous
-//  bursts proportional to charge. No cooldown.
-//  More charge = louder + more layers = denser sound.
-//
-//  This matches reality: continuous tilt accumulates
-//  seed energy; direction change fires it all at once.
-// ══════════════════════════════════════════════════════
+// ── 1. AUDIO CONTEXT ────────────────────────────────
 let AC = null, master = null, muted = false;
-let noiseBuf = null;
-
-const PENTA = [523.25,587.33,659.25,783.99,880.00,
-               1046.5,1174.7,1318.5,1568.0,1760.0];
-const bellCd = new Map();
-
-const MODES_CFG = {
-  maracas:{ fLo:3200, fHi:8500, q:1.4, isBell:false },
-  shaker: { fLo:4800, fHi:11000,q:0.9, isBell:false },
-  rain:   { fLo:500,  fHi:2200, q:0.5, isBell:false },
-  seeds:  { fLo:1800, fHi:5500, q:2.0, isBell:false },
-  bells:  { fLo:0,    fHi:0,    q:0,   isBell:true  },
-};
-let cfg = MODES_CFG.maracas;
-let modeName = 'maracas';
-
-const mot = { pax:0,pay:0,paz:0, jerk:0, charge:0, vel:0 };
-let grainCount = 0, motionOn = false;
-let lastRustle = 0;
+let whiteBuf = null;
 
 function initAudio() {
   if (AC) return;
   AC = new (window.AudioContext || window.webkitAudioContext)();
   const comp = AC.createDynamicsCompressor();
-  comp.threshold.value=-14; comp.knee.value=8;
-  comp.ratio.value=5; comp.attack.value=0.001; comp.release.value=0.10;
+  comp.threshold.value = -16; comp.knee.value = 8;
+  comp.ratio.value = 5;       comp.attack.value = 0.001;
+  comp.release.value = 0.10;
   master = AC.createGain(); master.gain.value = 1.9;
   master.connect(comp); comp.connect(AC.destination);
-  const sb=AC.createBuffer(1,1,AC.sampleRate);
-  const ss=AC.createBufferSource();
+  const sb = AC.createBuffer(1,1,AC.sampleRate);
+  const ss = AC.createBufferSource();
   ss.buffer=sb; ss.connect(AC.destination); ss.start(0);
   if(AC.state==='suspended') AC.resume();
-  buildNoise();
+  buildWhiteNoise();
 }
 
-function buildNoise() {
-  const sr=AC.sampleRate, len=sr*2;
-  noiseBuf=AC.createBuffer(1,len,sr);
-  const d=noiseBuf.getChannelData(0);
-  let b0=0,b1=0,b2=0,b3=0,b4=0;
-  for(let i=0;i<len;i++){
-    const w=Math.random()*2-1;
-    b0=.99886*b0+w*.0555; b1=.99332*b1+w*.0751;
-    b2=.96900*b2+w*.1539; b3=.86650*b3+w*.3105;
-    b4=.55000*b4+w*.5330;
-    d[i]=(b0+b1+b2+b3+b4)*0.11;
-  }
+function buildWhiteNoise() {
+  const sr=AC.sampleRate, len=sr*3;
+  whiteBuf=AC.createBuffer(1,len,sr);
+  const d=whiteBuf.getChannelData(0);
+  for(let i=0;i<len;i++) d[i]=Math.random()*2-1;
 }
 
-// Instant-on noise burst — pure decay, no attack ramp
-function burst(when, freq, Q, vol, dec) {
-  if(!AC||!noiseBuf||muted||vol<0.003) return;
-  grainCount++;
-  const off=Math.random()*(noiseBuf.duration-0.06);
+// ── 2. DRY GRAIN — tight, sandy, no softness ─────────
+// Key: very narrow bandpass + instant attack + hard decay curve
+// This makes each grain sound like a dry particle hit, not a whoosh.
+function dryGrain(when, freq, Q, vol, decSec) {
+  if(!AC||!whiteBuf||muted||vol<0.003) return;
+  const off=Math.random()*(whiteBuf.duration-0.04);
   const src=AC.createBufferSource();
-  src.buffer=noiseBuf;
-  src.loopStart=off; src.loopEnd=off+0.02+Math.random()*0.03;
+  src.buffer=whiteBuf;
+  src.loopStart=off; src.loopEnd=off+0.008+Math.random()*0.008;
   src.loop=true;
-  src.playbackRate.value=0.72+Math.random()*0.60;
+  // Slight pitch variety without rounding the attack
+  src.playbackRate.value=0.9+Math.random()*0.4;
+
+  // Narrow bandpass = dry, focused, sandy
   const bp=AC.createBiquadFilter();
   bp.type='bandpass';
-  bp.frequency.value=freq*(0.82+Math.random()*0.36);
-  bp.Q.value=Q*(0.55+Math.random()*0.90);
+  bp.frequency.value=freq;
+  bp.Q.value=Q;
+
+  // Second narrower bandpass in series — kills roundness further
+  const bp2=AC.createBiquadFilter();
+  bp2.type='bandpass';
+  bp2.frequency.value=freq*(0.9+Math.random()*0.2);
+  bp2.Q.value=Q*1.8;
+
   const env=AC.createGain();
+  // INSTANT on — no ramp at all
   env.gain.setValueAtTime(vol, when);
-  env.gain.exponentialRampToValueAtTime(0.0001, when+dec);
-  src.connect(bp); bp.connect(env); env.connect(master);
-  src.start(when); src.stop(when+dec+0.003);
+  // Hard exponential decay — short, no tail
+  env.gain.exponentialRampToValueAtTime(0.0001, when+decSec);
+
+  src.connect(bp); bp.connect(bp2); bp2.connect(env); env.connect(master);
+  src.start(when); src.stop(when+decSec+0.002);
 }
 
-// Fire N simultaneous layers — all at time=now
-// n scales with charge so more energy = denser hit
-function fireHit(charge) {
-  if(!AC||muted) return;
-  const now = AC.currentTime;
-  const m   = cfg;
-  const span = m.fHi - m.fLo;
+// ── 3. SHELL CLICK — dry body snap ───────────────────
+// Mandatory layer: 1000-3000 Hz, 5-15ms, hard and short
+function shellClick(when, energy) {
+  if(!AC||!whiteBuf||muted) return;
+  const freq=1200+Math.random()*1600;
+  const vol=0.42*energy*(0.6+Math.random()*0.5);
+  const dec=0.004+Math.random()*0.011; // 4-15ms max
+  dryGrain(when, freq, 5+Math.random()*4, vol, dec);
+}
 
-  // Number of simultaneous layers: 1 at min charge, up to 10 at max
-  const n = Math.max(1, Math.round(charge * 10));
+// ── 4. MODE CONFIGS ───────────────────────────────────
+const MODES_SND = {
+  maracas:{ fLo:3500, fHi:7500, qLo:3.0, qHi:7.0 }, // tight, sandy
+  shaker: { fLo:5500, fHi:11000,qLo:2.5, qHi:6.0 },
+  rain:   { fLo:500,  fHi:2000, qLo:1.5, qHi:4.0 },
+  seeds:  { fLo:2000, fHi:5000, qLo:4.0, qHi:8.0 },
+  bells:  { fLo:0,    fHi:0,    qLo:0,   qHi:0   },
+};
+let sndMode=MODES_SND.maracas;
+let modeName='maracas';
 
-  for(let i=0; i<n; i++){
-    const freq = m.fLo + Math.random()*span;
-    const vol  = charge * 1.6 * (0.55 + Math.random()*0.70);
-    const dec  = 0.006 + Math.random()*0.010; // 6-16ms — sharp
-    burst(now, freq, m.q, vol, dec);
+// ── 5. BURST LAYER — large impulse peaks ─────────────
+// Fires on strong jerk: dense cluster of dry grains, all near t=0
+let burstCount=0;
+
+function grainCount(energy) {
+  // log saturation: 5 at min → 40 at max, hard cap 50
+  return Math.min(50, Math.round(5 + Math.log1p(energy*12)/Math.log1p(12)*35));
+}
+
+function triggerBurst(energy) {
+  if(!AC||muted||sndMode.fLo===0) return;
+  burstCount++;
+  const now=AC.currentTime;
+  const m=sndMode;
+  const burstDur=0.025+energy*0.065; // 25-90ms (shorter = snappier)
+  const n=grainCount(energy);
+  // Brightness: more energy → push toward high freq
+  const fCenter=m.fLo+energy*(m.fHi-m.fLo);
+
+  for(let i=0;i<n;i++){
+    // ^2 distribution = dense cluster at front
+    const r=Math.random();
+    const tOff=r*r*burstDur;
+    const when=now+tOff;
+    const freq=fCenter*(0.65+Math.random()*0.70);
+    const Q=m.qLo+Math.random()*(m.qHi-m.qLo);
+    const vol=(0.45+Math.random()*0.55)*energy*0.85;
+    const dec=0.008+Math.random()*0.018; // 8-26ms — short, dry
+    dryGrain(when, freq, Q, vol, dec);
   }
+  shellClick(now, energy);
 }
 
-// Soft rustle between hits
-function maybeRustle(vel) {
-  if(vel<0.04) return;
+// ── 6. MICRO-RATTLE LAYER — small continuous dryness ─
+// Activates at low sustained energy (0.04+).
+// NOT continuous noise — individual micro-grains, each ≤15ms.
+// Rate proportional to energy: sparse at low, dense at high.
+// Random jitter on timing/freq/vol prevents mechanical feel.
+
+let lastMicroT=0; // last micro-grain fired (performance.now)
+
+function maybeMicroRattle(energy) {
+  if(!AC||muted||sndMode.fLo===0||energy<0.04) return;
   const now=performance.now();
-  const interval=Math.max(12, 55-vel*42);
-  if(now-lastRustle<interval) return;
-  lastRustle=now;
-  const m=cfg;
-  const vol=0.25*vel*(0.3+Math.random()*0.5);
-  burst(AC.currentTime,
-    m.fLo*(0.7+Math.random()*0.9), m.q*0.45,
-    vol, 0.015+Math.random()*0.018);
+
+  // Rate: 80ms gap at e=0.04 → 12ms at e=1.0
+  // Formula: interval = 80 - energy*68, floored at 12ms
+  const interval=Math.max(12, 80-energy*68);
+
+  // Add jitter ±30% so it never sounds like a metronome
+  const jitter=(0.7+Math.random()*0.6)*interval;
+  if(now-lastMicroT < jitter) return;
+  lastMicroT=now;
+
+  const m=sndMode;
+  const t=AC.currentTime;
+
+  // Micro-grain: very narrow, very short, dry
+  // Freq biased toward upper-mid (sandy texture)
+  const freq=m.fLo*0.8 + Math.random()*(m.fHi-m.fLo)*0.6;
+  const Q=m.qLo*1.2+Math.random()*(m.qHi-m.qLo)*0.5;
+  const vol=0.18*energy*(0.3+Math.random()*0.55);
+  const dec=0.004+Math.random()*0.011; // 4-15ms — hard limit
+
+  dryGrain(t, freq, Q, vol, dec);
 }
 
-// Bell
-function bellNote(idx,vel){
+// ── 7. BELL MODE ─────────────────────────────────────
+const PENTA=[523.25,587.33,659.25,783.99,880.00,
+             1046.5,1174.7,1318.5,1568.0,1760.0];
+const bellCd=new Map();
+
+function triggerBell(noteIdx,energy) {
   if(!AC||muted) return;
   const now=performance.now();
-  if(now-(bellCd.get(idx)||0)<160) return;
-  bellCd.set(idx,now);
-  if(vel<0.12) return;
-  const t=AC.currentTime, freq=PENTA[idx%PENTA.length];
+  if(now-(bellCd.get(noteIdx)||0)<150) return;
+  bellCd.set(noteIdx,now);
+  if(energy<0.12) return;
+  const t=AC.currentTime, freq=PENTA[noteIdx%PENTA.length];
   const mod=AC.createOscillator(),modG=AC.createGain();
   const car=AC.createOscillator(),carE=AC.createGain();
   mod.frequency.value=freq*2.756; car.frequency.value=freq;
-  modG.gain.setValueAtTime(freq*vel*2.5,t);
+  modG.gain.setValueAtTime(freq*energy*2.5,t);
   modG.gain.exponentialRampToValueAtTime(0.001,t+0.18);
   mod.connect(modG); modG.connect(car.frequency);
-  const vol=0.32*(0.4+vel*0.6),dec=0.4+vel*0.6;
+  const vol=0.30*(0.4+energy*0.6),dec=0.35+energy*0.55;
   carE.gain.setValueAtTime(vol,t);
   carE.gain.exponentialRampToValueAtTime(0.0001,t+dec);
   car.connect(carE); carE.connect(master);
   mod.start(t); car.start(t); mod.stop(t+dec+.05); car.stop(t+dec+.05);
 }
 
-function processMotion(ax,ay,az){
-  // Jerk = delta-acceleration magnitude
-  const djx=ax-mot.pax,djy=ay-mot.pay,djz=az-mot.paz;
-  const jerk=Math.sqrt(djx*djx+djy*djy+djz*djz);
+// ── 8. MOTION → ENERGY → GESTURE ─────────────────────
+//
+//  energy_raw = |Δacc|
+//  energy     = lerp(prev, raw, 0.2)
+//  BURST:  fire on rising edge above threshold (>0.10)
+//  MICRO:  fire on any sustained energy >0.04 (between bursts too)
+//
+let motionOn=false;
+const mot={pax:0,pay:0,paz:0,energy:0,prevEnergy:0};
+let lastBurst=0;
+let GX=0,GY=0.38;
+
+const BURST_THRESHOLD=0.10;
+const BURST_MIN_GAP=55; // ms — max ~18 bursts/sec
+
+function onMotion(e) {
+  const a=e.accelerationIncludingGravity||{};
+  const ax=a.x||0,ay=a.y||0,az=a.z||0;
+
+  const dx=ax-mot.pax,dy=ay-mot.pay,dz=az-mot.paz;
   mot.pax=ax; mot.pay=ay; mot.paz=az;
-  mot.jerk=jerk;
 
-  // Velocity for rustle
-  const mag=Math.sqrt(ax*ax+ay*ay+az*az);
-  mot.vel=mot.vel*0.75+Math.max(0,(mag-9.5)*0.10)*0.25;
+  const raw=Math.sqrt(dx*dx+dy*dy+dz*dz);
+  mot.prevEnergy=mot.energy;
+  mot.energy=mot.energy*0.8+raw*0.2;
 
-  if(!AC||muted||cfg.isBell) return;
+  const now=performance.now();
+  const strength=Math.min(1,mot.energy*0.07);
 
-  // CHARGE: each motion event adds jerk to charge bucket.
-  // Charge decays quickly so it reflects instantaneous energy,
-  // not accumulated history. This prevents "charge building up"
-  // during slow movement and firing unexpectedly.
-  // α=0.55: fast attack, fast decay — tracks real-time wrist snap.
-  const jerkNorm = Math.min(1, jerk * 0.09);
-  mot.charge = mot.charge * 0.45 + jerkNorm * 0.55;
-
-  // Fire every call if charge above minimum threshold
-  // No cooldown — let the charge level gate the sound naturally
-  if(mot.charge > 0.04) {
-    fireHit(mot.charge);
+  // BURST: rising edge + threshold + rate limit
+  if(mot.energy>BURST_THRESHOLD &&
+     mot.energy>mot.prevEnergy &&
+     now-lastBurst>BURST_MIN_GAP) {
+    lastBurst=now;
+    if(modeName==='bells')
+      triggerBell(Math.floor(Math.random()*PENTA.length),strength);
+    else
+      triggerBurst(strength);
   }
 
-  maybeRustle(Math.min(1, mot.vel));
+  // MICRO-RATTLE: runs independently, lower threshold
+  // Active even when energy is not rising — fills gaps between bursts
+  if(modeName!=='bells') maybeMicroRattle(strength);
+
+  GX=Math.max(-.9,Math.min(.9, ax*.062));
+  GY=Math.max(-.9,Math.min(.9,-ay*.062));
 }
 
-// ══════════════════════════════════════════════════════
-//  PHYSICS
-// ══════════════════════════════════════════════════════
-const cv=document.getElementById('cv');
-const ctx=cv.getContext('2d');
-let W=0,H=0,dpr=1,GX=0,GY=0.38;
-const BALL_N=165,REST=0.52,FRIC=0.996,SUBSTEPS=3;
-let balls=[];
+// ── 7. PHYSICS ──────────────────────────────────────
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+let W = 0, H = 0, dpr = 1;
+const BALL_N = 165, REST = 0.52, FRIC = 0.996, SUBSTEPS = 3;
+let balls = [];
 
-const PALETTES={
-  maracas:()=>({h:28+Math.random()*22,s:35,l:65+Math.random()*15}),
-  shaker: ()=>({h:210+Math.random()*28,s:25,l:62+Math.random()*16}),
-  rain:   ()=>({h:188+Math.random()*24,s:22,l:52+Math.random()*16}),
-  seeds:  ()=>({h:82+Math.random()*28,s:24,l:55+Math.random()*14}),
-  bells:  ()=>({h:46+Math.random()*30,s:48,l:74+Math.random()*14}),
+const PALETTES = {
+  maracas:()=>({h:28+Math.random()*22, s:35, l:65+Math.random()*15}),
+  shaker: ()=>({h:210+Math.random()*28,s:25, l:62+Math.random()*16}),
+  rain:   ()=>({h:188+Math.random()*24,s:22, l:52+Math.random()*16}),
+  seeds:  ()=>({h:82+Math.random()*28, s:24, l:55+Math.random()*14}),
+  bells:  ()=>({h:46+Math.random()*30, s:48, l:74+Math.random()*14}),
 };
-let palFn=PALETTES.maracas;
+let palFn = PALETTES.maracas;
 
-function mkBall(i){
-  const r=2+Math.random()*2.5,p=palFn();
-  return{id:i,x:r+Math.random()*(W-r*2),y:r+Math.random()*(H*0.6),
-    vx:(Math.random()-.5)*4,vy:(Math.random()-.5)*4,r,
-    fill:`hsl(${p.h},${p.s}%,${p.l}%)`,a:0.68+Math.random()*0.32,
-    noteIdx:Math.floor(Math.random()*PENTA.length)};
+function mkBall(i) {
+  const r = 2 + Math.random() * 2.5, p = palFn();
+  return { id:i, x:r+Math.random()*(W-r*2), y:r+Math.random()*(H*0.6),
+    vx:(Math.random()-.5)*4, vy:(Math.random()-.5)*4,
+    r, fill:`hsl(${p.h},${p.s}%,${p.l}%)`, a:0.68+Math.random()*0.32,
+    noteIdx: Math.floor(Math.random()*PENTA.length) };
 }
-function initBalls(){balls=[];for(let i=0;i<BALL_N;i++)balls.push(mkBall(i));}
-function recolor(){balls.forEach(b=>{const p=palFn();b.fill=`hsl(${p.h},${p.s}%,${p.l}%)`});}
+function initBalls(){ balls=[]; for(let i=0;i<BALL_N;i++) balls.push(mkBall(i)); }
+function recolor(){ balls.forEach(b=>{ const p=palFn(); b.fill=`hsl(${p.h},${p.s}%,${p.l}%)`; }); }
 
-function resize(){
+function resize() {
   dpr=Math.min(window.devicePixelRatio||1,2);
-  W=window.innerWidth;H=window.innerHeight;
-  cv.width=W*dpr;cv.height=H*dpr;
-  cv.style.width=W+'px';cv.style.height=H+'px';
+  W=window.innerWidth; H=window.innerHeight;
+  cv.width=W*dpr; cv.height=H*dpr;
+  cv.style.width=W+'px'; cv.style.height=H+'px';
   ctx.setTransform(dpr,0,0,dpr,0,0);
   initBalls();
 }
-window.addEventListener('resize',()=>{ctx.setTransform(1,0,0,1,0,0);resize();});
+window.addEventListener('resize',()=>{ ctx.setTransform(1,0,0,1,0,0); resize(); });
 
-const wallBellCd=new Map();
-function wallBell(bid,ni,sp){
-  if(modeName!=='bells') return;
-  const now=performance.now();
-  if(now-(wallBellCd.get(bid)||0)<200) return;
-  wallBellCd.set(bid,now);
-  bellNote(ni,Math.min(1,sp*0.12));
+const wBellCd = new Map();
+function wallBell(bid, ni, sp) {
+  if (modeName !== 'bells') return;
+  const now = performance.now();
+  if (now-(wBellCd.get(bid)||0) < 180) return;
+  wBellCd.set(bid, now);
+  triggerBell(ni, Math.min(1, sp * 0.12));
 }
 
-function physicsStep(){
-  for(let s=0;s<SUBSTEPS;s++){
-    for(const b of balls){b.vx=(b.vx+GX)*FRIC;b.vy=(b.vy+GY)*FRIC;b.x+=b.vx;b.y+=b.vy;}
-    for(const b of balls){
-      if(b.x-b.r<0){b.x=b.r;const sp=Math.abs(b.vx);b.vx=sp*REST;wallBell(b.id,b.noteIdx,sp);}
-      else if(b.x+b.r>W){b.x=W-b.r;const sp=Math.abs(b.vx);b.vx=-sp*REST;wallBell(b.id,b.noteIdx,sp);}
-      if(b.y-b.r<0){b.y=b.r;const sp=Math.abs(b.vy);b.vy=sp*REST;wallBell(b.id,b.noteIdx,sp);}
-      else if(b.y+b.r>H){b.y=H-b.r;const sp=Math.abs(b.vy);b.vy=-sp*REST;wallBell(b.id,b.noteIdx,sp);}
+function physicsStep() {
+  for (let s=0; s<SUBSTEPS; s++) {
+    for (const b of balls) {
+      b.vx=(b.vx+GX)*FRIC; b.vy=(b.vy+GY)*FRIC;
+      b.x+=b.vx; b.y+=b.vy;
     }
-    for(let i=0;i<balls.length;i++){
-      for(let j=i+1;j<balls.length;j++){
-        const a=balls[i],b=balls[j];
-        const dx=b.x-a.x,dy=b.y-a.y,d2=dx*dx+dy*dy,md=a.r+b.r;
+    for (const b of balls) {
+      if(b.x-b.r<0)    { b.x=b.r;   const sp=Math.abs(b.vx); b.vx= sp*REST; wallBell(b.id,b.noteIdx,sp); }
+      else if(b.x+b.r>W){ b.x=W-b.r; const sp=Math.abs(b.vx); b.vx=-sp*REST; wallBell(b.id,b.noteIdx,sp); }
+      if(b.y-b.r<0)    { b.y=b.r;   const sp=Math.abs(b.vy); b.vy= sp*REST; wallBell(b.id,b.noteIdx,sp); }
+      else if(b.y+b.r>H){ b.y=H-b.r; const sp=Math.abs(b.vy); b.vy=-sp*REST; wallBell(b.id,b.noteIdx,sp); }
+    }
+    for (let i=0;i<balls.length;i++) {
+      for (let j=i+1;j<balls.length;j++) {
+        const a=balls[i], b=balls[j];
+        const dx=b.x-a.x, dy=b.y-a.y, d2=dx*dx+dy*dy, md=a.r+b.r;
         if(d2>=md*md||d2<.001) continue;
-        const dist=Math.sqrt(d2),nx=dx/dist,ny=dy/dist,ov=(md-dist)*.5;
-        a.x-=nx*ov;a.y-=ny*ov;b.x+=nx*ov;b.y+=ny*ov;
-        const dvx=b.vx-a.vx,dvy=b.vy-a.vy,dot=dvx*nx+dvy*ny;
-        if(dot<0){const imp=dot*(1+REST)*.5;
-          a.vx+=imp*nx;a.vy+=imp*ny;b.vx-=imp*nx;b.vy-=imp*ny;}
+        const dist=Math.sqrt(d2), nx=dx/dist, ny=dy/dist, ov=(md-dist)*.5;
+        a.x-=nx*ov; a.y-=ny*ov; b.x+=nx*ov; b.y+=ny*ov;
+        const dvx=b.vx-a.vx, dvy=b.vy-a.vy, dot=dvx*nx+dvy*ny;
+        if(dot<0) {
+          const imp=dot*(1+REST)*.5;
+          a.vx+=imp*nx; a.vy+=imp*ny; b.vx-=imp*nx; b.vy-=imp*ny;
+        }
       }
     }
   }
 }
 
-function draw(){
-  ctx.fillStyle='#07070c';ctx.fillRect(0,0,W,H);
-  for(const b of balls){
-    ctx.globalAlpha=b.a;ctx.fillStyle=b.fill;
-    ctx.beginPath();ctx.arc(b.x,b.y,b.r,0,Math.PI*2);ctx.fill();
+function draw() {
+  ctx.fillStyle='#07070c'; ctx.fillRect(0,0,W,H);
+  for (const b of balls) {
+    ctx.globalAlpha=b.a; ctx.fillStyle=b.fill;
+    ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,Math.PI*2); ctx.fill();
   }
   ctx.globalAlpha=1;
 }
 
-function loop(){requestAnimationFrame(loop);physicsStep();draw();}
+function loop() { requestAnimationFrame(loop); physicsStep(); draw(); }
 
-function onMotion(e){
-  const a=e.accelerationIncludingGravity||{};
-  processMotion(a.x||0,a.y||0,a.z||0);
-  GX=Math.max(-.9,Math.min(.9,(a.x||0)*.062));
-  GY=Math.max(-.9,Math.min(.9,-(a.y||0)*.062));
-}
-
-// ══════════════════════════════════════════════════════
-//  UI
-// ══════════════════════════════════════════════════════
-const dbg=document.createElement('div');
-dbg.style.cssText='position:fixed;top:10px;left:10px;z-index:99;font:11px monospace;color:lime;pointer-events:none;line-height:1.7;text-shadow:0 0 3px #000';
-document.body.appendChild(dbg);
+// ── 8. UI ────────────────────────────────────────────
+const dbgEl = document.getElementById('dbg');
 setInterval(()=>{
-  dbg.innerHTML='jerk:'+mot.jerk.toFixed(1)+
-    ' chg:'+mot.charge.toFixed(2)+
-    ' g:'+grainCount+
+  dbgEl.innerHTML =
+    'e:'+mot.energy.toFixed(2)+
+    ' prev:'+mot.prevEnergy.toFixed(2)+
+    ' bursts:'+burstCount+
     ' '+(motionOn?'●':'○');
-},150);
+}, 150);
 
-document.getElementById('splash').addEventListener('click',async()=>{
+document.getElementById('splash').addEventListener('click', async () => {
   initAudio();
-  try{
-    if(typeof DeviceMotionEvent!=='undefined'&&
-       typeof DeviceMotionEvent.requestPermission==='function'){
-      const r=await DeviceMotionEvent.requestPermission();
-      if(r!=='granted') throw new Error('denied');
+  try {
+    if (typeof DeviceMotionEvent!=='undefined' &&
+        typeof DeviceMotionEvent.requestPermission==='function') {
+      const r = await DeviceMotionEvent.requestPermission();
+      if (r!=='granted') throw new Error('denied');
     }
-    window.addEventListener('devicemotion',onMotion,{passive:true});
-    motionOn=true;
-  }catch(e){console.warn('Motion:',e.message);}
+    window.addEventListener('devicemotion', onMotion, { passive:true });
+    motionOn = true;
+  } catch(e) { console.warn('Motion:', e.message); }
   document.getElementById('splash').classList.add('gone');
   document.getElementById('strip').classList.add('show');
 });
 
-document.querySelectorAll('.chip').forEach(btn=>{
-  btn.addEventListener('click',()=>{
+document.querySelectorAll('.chip').forEach(btn => {
+  btn.addEventListener('click', () => {
     document.querySelectorAll('.chip').forEach(c=>c.classList.remove('active'));
     btn.classList.add('active');
-    const m=btn.dataset.mode;
-    modeName=m;cfg=MODES_CFG[m]||MODES_CFG.maracas;
-    palFn=PALETTES[m]||PALETTES.maracas;
-    document.getElementById('mode-label').textContent=btn.textContent;
+    const m = btn.dataset.mode;
+    modeName = m;
+    sndMode  = MODES_SND[m] || MODES_SND.maracas;
+    palFn    = PALETTES[m]  || PALETTES.maracas;
+    document.getElementById('mode-label').textContent = btn.textContent;
     recolor();
   });
 });
 
-document.getElementById('ic-mute').addEventListener('click',()=>{
-  muted=!muted;
-  if(master) master.gain.value=muted?0:1.9;
-  document.getElementById('ic-mute').textContent=muted?'✕':'♪';
-  document.getElementById('ic-mute').classList.toggle('on',!muted);
+document.getElementById('ic-mute').addEventListener('click', () => {
+  muted = !muted;
+  if (master) master.gain.value = muted ? 0 : 1.8;
+  document.getElementById('ic-mute').textContent = muted ? '✕' : '♪';
+  document.getElementById('ic-mute').classList.toggle('on', !muted);
 });
 
-document.getElementById('ic-reset').addEventListener('click',()=>initBalls());
+document.getElementById('ic-reset').addEventListener('click', () => initBalls());
 
 resize();
 loop();

@@ -100,7 +100,7 @@ function initAudio() {
   comp.ratio.value = 3;       comp.attack.value = 0.004;
   comp.release.value = 0.20;
 
-  master = AC.createGain(); master.gain.value = 0.68;
+  master = AC.createGain(); master.gain.value = 1.2;
   master.connect(comp); comp.connect(AC.destination);
 
   // iOS speaker unlock
@@ -159,7 +159,7 @@ function grain(velScale) {
 
   const env = AC.createGain();
   // Volume: scales with energy, plus per-grain random variation ±25%
-  const vol = m.vol * velScale * (0.75 + Math.random() * 0.5);
+  const vol = m.vol * velScale * (1.4 + Math.random() * 0.8);
   // Duration: scales with energy — harder shake = slightly longer grains
   const dur = m.durLo + Math.random() * (m.durHi - m.durLo);
 
@@ -201,7 +201,7 @@ function bellNote(noteIdx, vel) {
 // At energy=1 → ~120 grains/sec (sounds like dense maracas)
 // Each tick checks: Math.random() < (energy * maxRate * dt)
 
-const MAX_GRAINS_PER_SEC = 110; // tuned for maraca density
+const MAX_GRAINS_PER_SEC = 220; // scaled for 165 balls
 
 function startGrainScheduler() {
   // No-op: grains are fired from onMotion directly
@@ -215,8 +215,9 @@ function maybeFireGrains() {
   if (e < 0.015) return;
   const dt = 0.016;
   const prob = e * MAX_GRAINS_PER_SEC * dt;
-  if (Math.random() < prob)         grain(e);
-  if (prob > 0.7 && Math.random() < (prob - 0.7)) grain(e * 0.65);
+  if (Math.random() < prob)                        grain(e);
+  if (prob > 0.5 && Math.random() < (prob - 0.5)) grain(e * 0.75);
+  if (prob > 1.2 && Math.random() < (prob - 1.2)) grain(e * 0.55);
 }
 
 // ── Motion processing ────────────────────────────────
@@ -229,7 +230,7 @@ function processMotion(ax, ay, az) {
   mot.ax=ax; mot.ay=ay; mot.az=az;
 
   // Raw energy from jerk (not just magnitude — jerk is what moves particles)
-  mot.raw = Math.min(1, jerk * 0.055);
+  mot.raw = Math.min(1, jerk * 0.085);
 
   // Asymmetric smoothing:
   // - Attack fast  (particles accelerate quickly)  α=0.45

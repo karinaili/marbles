@@ -67,7 +67,7 @@ let noiseBuf = null;
 
 // Mode sound params — tuned per material
 const MODES_SND = {
-  maracas:{ fLo:3000, fHi:7000, qLo:2.0, qHi:5.0, vol:0.55, dec:0.012 },
+  maracas:{ fLo:3000, fHi:7000, qLo:2.0, qHi:5.0, vol:0.85, dec:0.012 },
   shaker: { fLo:5000, fHi:10000,qLo:1.5, qHi:4.0, vol:0.45, dec:0.008 },
   rain:   { fLo:600,  fHi:2500, qLo:0.8, qHi:2.5, vol:0.50, dec:0.030 },
   seeds:  { fLo:2000, fHi:5500, qLo:2.5, qHi:6.0, vol:0.52, dec:0.014 },
@@ -82,7 +82,7 @@ function initAudio() {
   const comp = AC.createDynamicsCompressor();
   comp.threshold.value=-18; comp.knee.value=10;
   comp.ratio.value=5; comp.attack.value=0.001; comp.release.value=0.10;
-  master = AC.createGain(); master.gain.value = 1.8;
+  master = AC.createGain(); master.gain.value = 2.8;
   master.connect(comp); comp.connect(AC.destination);
   // iOS speaker unlock
   const sb=AC.createBuffer(1,1,AC.sampleRate);
@@ -175,7 +175,7 @@ function bellClick(noteIdx, speed) {
 // Queue them all, play only the N loudest per frame.
 // This gives correct density without AudioContext overload.
 const Q = [];
-const MAX_SOUNDS = 8; // max simultaneous clicks per frame
+const MAX_SOUNDS = 20; // max simultaneous clicks per frame
 
 function qClick(speed, isWall, noteIdx) {
   Q.push({ speed, isWall, noteIdx });
@@ -196,13 +196,13 @@ function flushQ() {
 
 // Per-pair cooldown — prevents same collision firing every substep
 const pairCd = new Map();
-const WALL_CD = 40;  // ms
-const BALL_CD = 55;  // ms
+const WALL_CD = 25;  // ms
+const BALL_CD = 35;  // ms
 
 function trySound(key, cdMs, speed, isWall, noteIdx) {
   const now = performance.now();
   if(now - (pairCd.get(key)||0) < cdMs) return;
-  if(speed < 0.8) return; // minimum impact speed
+  if(speed < 0.3) return; // minimum impact speed
   pairCd.set(key, now);
   qClick(speed, isWall, noteIdx);
 }
@@ -319,40 +319,41 @@ function loop() {
 }
 
 // ── MOTION ────────────────────────────────────────────
-// Maraca physics: seeds react to JERK (change in acceleration).
-// We use raw accelerationIncludingGravity directly.
-// Delta between frames = inertial force on seeds.
-// Only apply impulse when delta exceeds threshold —
-// prevents constant dribble, gives sharp discrete hits.
+// Two effects:
+// 1. Gravity: slow tilt → balls roll (GX/GY)
+// 2. Jerk: fast shake → direct velocity impulse on all balls
+//    Seeds are inertial: device goes UP → seeds fly DOWN (and hit floor)
+//    Device goes DOWN → seeds fly UP (and hit ceiling)
+//    Both directions make sound.
 let pax = 0, pay = 0, paz = 0;
 
 function onMotion(e) {
   const a  = e.accelerationIncludingGravity || {};
   const ax = a.x||0, ay = a.y||0, az = a.z||0;
 
-  // Jerk = change in raw acceleration this frame
+  // Jerk = frame-to-frame delta of raw acceleration
   const jx = ax - pax, jy = ay - pay, jz = az - paz;
   pax = ax; pay = ay; paz = az;
-
-  // Gravity for passive tilt (slow, gentle)
-  GX = Math.max(-.7, Math.min(.7,  ax * 0.055));
-  GY = Math.max(-.7, Math.min(.7, -ay * 0.055));
-
-  // Inertial impulse: only when jerk is strong enough
-  // This fires on BOTH directions — flick down AND flick up
   const jMag = Math.sqrt(jx*jx + jy*jy + jz*jz);
-  if (jMag < 1.5) return; // ignore slow drift, only sharp moves
 
-  // Map jerk to impulse on balls.
-  // Seeds feel force OPPOSITE to device acceleration (inertia).
-  // Clamp so extreme shakes don't send balls to infinity.
-  const scale = Math.min(4.0, jMag * 0.28);
-  const impX  = -jx * scale / jMag * (Math.abs(jx)/jMag);
-  const impY  =  jy * scale / jMag * (Math.abs(jy)/jMag);
+  // Passive gravity for tilt
+  GX = Math.max(-.8, Math.min(.8,  ax * 0.058));
+  GY = Math.max(-.8, Math.min(.8, -ay * 0.058));
+
+  // Impulse: threshold 1.2 catches both wrist flick directions
+  if (jMag < 1.2) return;
+
+  // Seeds feel inertia = opposite direction to device jerk
+  // Scale clamped: jMag=2→0.5, jMag=10→2.5, jMag=20→3.5
+  const scale = Math.min(3.5, jMag * 0.22);
+  // Normalise jerk direction, apply as velocity impulse
+  const ix = -(jx / jMag) * scale;
+  const iy =  (jy / jMag) * scale; // canvas Y is inverted
 
   for (const b of balls) {
-    b.vx += impX * (0.85 + Math.random()*0.30);
-    b.vy += impY * (0.85 + Math.random()*0.30);
+    // Small per-ball random so they don't all move identically
+    b.vx += ix * (0.8 + Math.random() * 0.4);
+    b.vy += iy * (0.8 + Math.random() * 0.4);
   }
 }
 

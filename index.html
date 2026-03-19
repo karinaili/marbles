@@ -60,210 +60,166 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;}
 let AC = null, master = null, muted = false;
 let noiseBuf = null;
 
-// Pentatonic scale freqs (C5 pentatonic + octave above) for bells mode
-const PENTA = [523.25, 587.33, 659.25, 783.99, 880.00,
-               1046.5, 1174.7, 1318.5, 1568.0, 1760.0];
+// Pentatonic C5
+const PENTA = [523.25,587.33,659.25,783.99,880.00,1046.5,1174.7,1318.5,1568.0,1760.0];
+
+// Mode sound params
+const MODES_SND = {
+  maracas:{ vol:0.28, freq:4400, q:1.5, dur:0.008, isNoise:true  },
+  shaker: { vol:0.22, freq:7000, q:1.0, dur:0.005, isNoise:true  },
+  rain:   { vol:0.24, freq:1200, q:0.5, dur:0.020, isNoise:true  },
+  seeds:  { vol:0.26, freq:2700, q:2.5, dur:0.010, isNoise:true  },
+  bells:  { vol:0.18, freq:0,    q:0,   dur:0,     isNoise:false },
+};
+let snd = MODES_SND.maracas;
+let modeName = 'maracas';
 
 function initAudio() {
   if (AC) return;
   AC = new (window.AudioContext || window.webkitAudioContext)();
 
   const comp = AC.createDynamicsCompressor();
-  comp.threshold.value = -18; comp.knee.value = 14;
-  comp.ratio.value = 3.5;    comp.attack.value = 0.005;
-  comp.release.value = 0.2;
+  comp.threshold.value=-20; comp.knee.value=14;
+  comp.ratio.value=3.5;     comp.attack.value=0.005;
+  comp.release.value=0.18;
 
-  master = AC.createGain();
-  master.gain.value = 0.45;
-  master.connect(comp);
-  comp.connect(AC.destination);
+  master = AC.createGain(); master.gain.value=0.65;
+  master.connect(comp); comp.connect(AC.destination);
 
   // iOS speaker unlock
-  const sb = AC.createBuffer(1, 1, AC.sampleRate);
-  const ss = AC.createBufferSource();
-  ss.buffer = sb; ss.connect(AC.destination); ss.start(0);
-  if (AC.state === 'suspended') AC.resume();
+  const sb=AC.createBuffer(1,1,AC.sampleRate);
+  const ss=AC.createBufferSource(); ss.buffer=sb;
+  ss.connect(AC.destination); ss.start(0);
+  if(AC.state==='suspended') AC.resume();
 
-  // Pink-ish noise buffer (60ms)
-  const sr = AC.sampleRate;
-  noiseBuf = AC.createBuffer(1, Math.floor(sr * 0.06), sr);
-  const d = noiseBuf.getChannelData(0);
+  // Short pink-ish noise buffer — 50ms
+  const sr=AC.sampleRate, len=Math.floor(sr*0.05);
+  noiseBuf=AC.createBuffer(1,len,sr);
+  const d=noiseBuf.getChannelData(0);
   let b0=0,b1=0,b2=0;
-  for (let i = 0; i < d.length; i++) {
-    const w = Math.random()*2-1;
+  for(let i=0;i<len;i++){
+    const w=Math.random()*2-1;
     b0=.99886*b0+w*.0555; b1=.96900*b1+w*.1538; b2=.57000*b2+w*.5330;
-    d[i]=(b0+b1+b2+w*.18)*.13;
+    d[i]=(b0+b1+b2+w*.18)*.12;
   }
 }
 
-// ── Noise click (maracas / shaker / rain / seeds) ───
-// vol, freq, Q, dur all tiny
-const NOISE_MODES = {
-  maracas: { vol:0.14, freq:4400, q:1.5, dur:0.008 },
-  shaker:  { vol:0.12, freq:7000, q:1.0, dur:0.005 },
-  rain:    { vol:0.13, freq:1300, q:0.5, dur:0.018 },
-  seeds:   { vol:0.13, freq:2800, q:2.5, dur:0.009 },
-};
+// One tiny noise click — called max 2× per frame
+function noiseClick(vel) {
+  if(!AC||!noiseBuf||muted) return;
+  const now=AC.currentTime;
+  const off=Math.random()*0.035;
 
-function noiseClick(p, vel) {
-  if (!AC || !noiseBuf || muted) return;
-  const now = AC.currentTime;
-  const off = Math.random() * 0.04;
-  const src = AC.createBufferSource();
-  src.buffer = noiseBuf;
-  src.loopStart = off; src.loopEnd = off + 0.007 + Math.random()*.003;
-  src.loop = true;
-  src.playbackRate.value = 0.82 + Math.random()*0.36;
+  const src=AC.createBufferSource();
+  src.buffer=noiseBuf;
+  src.loopStart=off; src.loopEnd=off+0.005+Math.random()*0.003;
+  src.loop=true;
+  src.playbackRate.value=0.85+Math.random()*0.32;
 
-  const bp = AC.createBiquadFilter();
-  bp.type = 'bandpass';
-  bp.frequency.value = p.freq * (0.8 + vel*0.4) * (0.94 + Math.random()*.12);
-  bp.Q.value = p.q * (0.7 + Math.random()*.5);
+  const bp=AC.createBiquadFilter();
+  bp.type='bandpass';
+  bp.frequency.value=snd.freq*(0.82+vel*0.36)*(0.93+Math.random()*0.14);
+  bp.Q.value=snd.q*(0.65+Math.random()*0.55);
 
-  const env = AC.createGain();
-  const vol = p.vol * (0.25 + vel*0.75);
-  const dur = p.dur * (0.6 + vel*0.7);
-  env.gain.setValueAtTime(vol, now);
-  env.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+  const env=AC.createGain();
+  const vol=snd.vol*(0.28+vel*0.72);
+  const dur=snd.dur*(0.55+vel*0.7);
+  env.gain.setValueAtTime(vol,now);
+  env.gain.exponentialRampToValueAtTime(0.0001,now+dur);
 
   src.connect(bp); bp.connect(env); env.connect(master);
-  src.start(now); src.stop(now + dur + 0.001);
+  src.start(now); src.stop(now+dur+0.001);
 }
 
-// ── Bell / chime (melodic mode) ─────────────────────
-// FM synthesis: carrier sine + modulator → warm bell tone
-// Each ball gets its own note from pentatonic scale
-function bellRing(noteIdx, vel, isWall) {
-  if (!AC || muted) return;
-  const now  = AC.currentTime;
-  const freq = PENTA[noteIdx % PENTA.length];
+// Bell FM note — only in bells mode
+const bellCd=new Map();
+function bellNote(ballId,vel) {
+  if(!AC||muted) return;
+  const now=performance.now();
+  if(now-(bellCd.get(ballId)||0)<180) return;
+  bellCd.set(ballId,now);
+  if(vel<0.2) return;
 
-  // Modulator → carrier (FM)
-  const mod  = AC.createOscillator();
-  const modG = AC.createGain();
-  const car  = AC.createOscillator();
-  const carE = AC.createGain();
+  const t=AC.currentTime;
+  const freq=PENTA[ballId%PENTA.length];
 
-  mod.type = 'sine';
-  mod.frequency.value = freq * 2.756; // inharmonic ratio → bell colour
-
-  car.type = 'sine';
-  car.frequency.value = freq;
-
-  // FM depth: more vel = more brightness (more FM)
-  const fmDepth = freq * (0.5 + vel * 2.5);
-  modG.gain.setValueAtTime(fmDepth, now);
-  modG.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
-
+  const mod=AC.createOscillator(), modG=AC.createGain();
+  const car=AC.createOscillator(), carE=AC.createGain();
+  mod.frequency.value=freq*2.756; car.frequency.value=freq;
+  modG.gain.setValueAtTime(freq*vel*2.2,t);
+  modG.gain.exponentialRampToValueAtTime(0.001,t+0.18);
   mod.connect(modG); modG.connect(car.frequency);
-
-  // Volume envelope: instant attack, long decay (bell lingering)
-  const vol = (isWall ? 0.11 : 0.06) * (0.3 + vel * 0.7);
-  const dec = isWall ? (0.4 + vel * 0.5) : (0.2 + vel * 0.3);
-  carE.gain.setValueAtTime(vol, now);
-  carE.gain.exponentialRampToValueAtTime(0.0001, now + dec);
-
+  const vol=0.16*(0.4+vel*0.6), dec=0.45+vel*0.55;
+  carE.gain.setValueAtTime(vol,t);
+  carE.gain.exponentialRampToValueAtTime(0.0001,t+dec);
   car.connect(carE); carE.connect(master);
-  mod.start(now); car.start(now);
-  mod.stop(now + dec + 0.05); car.stop(now + dec + 0.05);
+  mod.start(t); car.start(t); mod.stop(t+dec+.05); car.stop(t+dec+.05);
 }
 
-// ── Mode state ──────────────────────────────────────
-let modeName = 'maracas';
+// ── Hit queue: max 2 per frame ──────────────────────
+// Collects all collisions this frame, plays only the 2 loudest
+const hitQ=[];
+const hitCd=new Map();
+const WALL_CD=90, BALL_CD=130; // ms cooldown per pair
 
-// ── Sound queue: max 3 per frame, loudest wins ──────
-const HIT_QUEUE = [];
-const MAX_PER_FRAME = 3;
-const hitCd = new Map();       // per-pair cooldown
-const WALL_CD_MS = 80;
-const BALL_CD_MS = 120;
-
-function qHit(key, cdMs, vel, isWall, noteIdx) {
-  const now = performance.now();
-  if (now - (hitCd.get(key)||0) < cdMs) return;
-  if (vel < 0.07) return;
-  hitCd.set(key, now);
-  HIT_QUEUE.push({ vel, isWall, noteIdx });
-}
-
-function wallHit(bid, side, speed) {
-  if (muted || !AC) return;
-  qHit(bid*4+side, WALL_CD_MS, Math.min(1, speed*0.09), true, bid);
-}
-
-function ballHit(aid, bid, speed) {
-  if (muted || !AC) return;
-  const key = 1e6 + Math.min(aid,bid)*1000 + Math.max(aid,bid);
-  qHit(key, BALL_CD_MS, Math.min(0.7, speed*0.07), false,
-       Math.floor((aid+bid)/2));
+function queueHit(key,cdMs,vel,ballId) {
+  const now=performance.now();
+  if(now-(hitCd.get(key)||0)<cdMs) return;
+  if(vel<0.08) return;
+  hitCd.set(key,now);
+  hitQ.push({vel,ballId});
 }
 
 function flushHits() {
-  if (!HIT_QUEUE.length) return;
-  // Sort descending by vel, play only top MAX_PER_FRAME
-  HIT_QUEUE.sort((a,b) => b.vel - a.vel);
-  const play = HIT_QUEUE.splice(0, MAX_PER_FRAME);
-  HIT_QUEUE.length = 0;
-  for (const h of play) {
-    if (modeName === 'bells') {
-      bellRing(h.noteIdx, h.vel * (h.isWall ? 1 : 0.6), h.isWall);
-    } else {
-      const p = Object.assign({}, NOISE_MODES[modeName] || NOISE_MODES.maracas);
-      if (!h.isWall) { p.vol *= 0.45; p.dur *= 0.7; }
-      noiseClick(p, h.vel);
-    }
+  if(!hitQ.length) return;
+  hitQ.sort((a,b)=>b.vel-a.vel);
+  // Play max 2 — enough to feel present, not enough to overload
+  const n=Math.min(2,hitQ.length);
+  for(let i=0;i<n;i++){
+    const h=hitQ[i];
+    if(modeName==='bells') bellNote(h.ballId,h.vel);
+    else noiseClick(h.vel);
   }
+  hitQ.length=0;
 }
 
 // ═══════════════════════════════════════════════════════
-//  PHYSICS
+//  PHYSICS — 20 balls, clear individual sounds
 // ═══════════════════════════════════════════════════════
-const cv  = document.getElementById('cv');
-const ctx = cv.getContext('2d');
-let W=0, H=0, dpr=1;
-let GX=0, GY=0.35;
+const cv=document.getElementById('cv');
+const ctx=cv.getContext('2d');
+let W=0,H=0,dpr=1;
+let GX=0,GY=0.38;
 
-const BALL_N   = 90;   // more balls, smaller
-const REST     = 0.50;
-const FRIC     = 0.992;
-const SUBSTEPS = 3;
+const BALL_N  = 22;   // few enough that each hit is audible
+const REST    = 0.52;
+const FRIC    = 0.996; // low friction = lively
+const SUBSTEPS= 3;
 
-let balls = [];
+let balls=[];
 
-const PALETTES = {
-  maracas:()=>({h:28 +Math.random()*22,s:33,l:64+Math.random()*16}),
-  shaker: ()=>({h:210+Math.random()*28,s:23,l:60+Math.random()*18}),
-  rain:   ()=>({h:188+Math.random()*24,s:20,l:50+Math.random()*18}),
-  seeds:  ()=>({h:82 +Math.random()*28,s:22,l:52+Math.random()*16}),
-  bells:  ()=>({h:46 +Math.random()*30,s:45,l:72+Math.random()*16}),
+const PALETTES={
+  maracas:()=>({h:28 +Math.random()*22,s:35,l:65+Math.random()*15}),
+  shaker: ()=>({h:210+Math.random()*28,s:25,l:62+Math.random()*16}),
+  rain:   ()=>({h:188+Math.random()*24,s:22,l:52+Math.random()*16}),
+  seeds:  ()=>({h:82 +Math.random()*28,s:24,l:55+Math.random()*14}),
+  bells:  ()=>({h:46 +Math.random()*30,s:48,l:74+Math.random()*14}),
 };
-let palFn = PALETTES.maracas;
+let palFn=PALETTES.maracas;
 
-function mkBall(i) {
-  const r = 2 + Math.random() * 3.5;  // smaller: 2–5.5px
-  const p = palFn();
-  return {
-    id:i,
-    x: r + Math.random()*(W - r*2),
-    y: r + Math.random()*(H * 0.6),
-    vx:(Math.random()-.5)*3,
-    vy:(Math.random()-.5)*3,
-    r,
-    noteIdx: Math.floor(Math.random() * PENTA.length), // fixed note per ball
-    fill:`hsl(${p.h},${p.s}%,${p.l}%)`,
-    a: 0.70 + Math.random()*0.30,
+function mkBall(i){
+  const r=4+Math.random()*5; // larger — clearer individual hits
+  const p=palFn();
+  return{
+    id:i, x:r+Math.random()*(W-r*2), y:r+Math.random()*(H*0.5),
+    vx:(Math.random()-.5)*5, vy:(Math.random()-.5)*5,
+    r, fill:`hsl(${p.h},${p.s}%,${p.l}%)`, a:0.72+Math.random()*0.28,
   };
 }
+function initBalls(){balls=[];for(let i=0;i<BALL_N;i++)balls.push(mkBall(i));}
+function recolor(){balls.forEach(b=>{const p=palFn();b.fill=`hsl(${p.h},${p.s}%,${p.l}%)`});}
 
-function initBalls() {
-  balls=[];
-  for (let i=0; i<BALL_N; i++) balls.push(mkBall(i));
-}
-function recolor() {
-  balls.forEach(b=>{ const p=palFn(); b.fill=`hsl(${p.h},${p.s}%,${p.l}%)`; });
-}
-
-function resize() {
+function resize(){
   dpr=Math.min(window.devicePixelRatio||1,2);
   W=window.innerWidth; H=window.innerHeight;
   cv.width=W*dpr; cv.height=H*dpr;
@@ -271,58 +227,62 @@ function resize() {
   ctx.setTransform(dpr,0,0,dpr,0,0);
   initBalls();
 }
-window.addEventListener('resize',()=>{ ctx.setTransform(1,0,0,1,0,0); resize(); });
+window.addEventListener('resize',()=>{ctx.setTransform(1,0,0,1,0,0);resize();});
 
-function physicsStep() {
-  for (let s=0; s<SUBSTEPS; s++) {
-    for (const b of balls) {
+function physicsStep(){
+  for(let s=0;s<SUBSTEPS;s++){
+    for(const b of balls){
       b.vx=(b.vx+GX)*FRIC; b.vy=(b.vy+GY)*FRIC;
       b.x+=b.vx; b.y+=b.vy;
     }
-
-    for (const b of balls) {
-      if (b.x-b.r<0)    { const sp=Math.abs(b.vx); b.x=b.r;   b.vx= sp*REST; wallHit(b.id,0,sp); }
-      else if(b.x+b.r>W){ const sp=Math.abs(b.vx); b.x=W-b.r; b.vx=-sp*REST; wallHit(b.id,1,sp); }
-      if (b.y-b.r<0)    { const sp=Math.abs(b.vy); b.y=b.r;   b.vy= sp*REST; wallHit(b.id,2,sp); }
-      else if(b.y+b.r>H){ const sp=Math.abs(b.vy); b.y=H-b.r; b.vy=-sp*REST; wallHit(b.id,3,sp); }
+    for(const b of balls){
+      if(b.x-b.r<0){
+        const sp=Math.abs(b.vx); b.x=b.r; b.vx=sp*REST;
+        queueHit(b.id*4+0,WALL_CD,Math.min(1,sp*0.11),b.id);
+      }else if(b.x+b.r>W){
+        const sp=Math.abs(b.vx); b.x=W-b.r; b.vx=-sp*REST;
+        queueHit(b.id*4+1,WALL_CD,Math.min(1,sp*0.11),b.id);
+      }
+      if(b.y-b.r<0){
+        const sp=Math.abs(b.vy); b.y=b.r; b.vy=sp*REST;
+        queueHit(b.id*4+2,WALL_CD,Math.min(1,sp*0.11),b.id);
+      }else if(b.y+b.r>H){
+        const sp=Math.abs(b.vy); b.y=H-b.r; b.vy=-sp*REST;
+        queueHit(b.id*4+3,WALL_CD,Math.min(1,sp*0.11),b.id);
+      }
     }
-
-    for (let i=0; i<balls.length; i++) {
-      for (let j=i+1; j<balls.length; j++) {
-        const a=balls[i], b=balls[j];
-        const dx=b.x-a.x, dy=b.y-a.y;
-        const d2=dx*dx+dy*dy, md=a.r+b.r;
-        if (d2>=md*md||d2<.001) continue;
-        const dist=Math.sqrt(d2), nx=dx/dist, ny=dy/dist;
-        const ov=(md-dist)*.5;
+    for(let i=0;i<balls.length;i++){
+      for(let j=i+1;j<balls.length;j++){
+        const a=balls[i],b=balls[j];
+        const dx=b.x-a.x,dy=b.y-a.y,d2=dx*dx+dy*dy,md=a.r+b.r;
+        if(d2>=md*md||d2<.001) continue;
+        const dist=Math.sqrt(d2),nx=dx/dist,ny=dy/dist,ov=(md-dist)*.5;
         a.x-=nx*ov; a.y-=ny*ov; b.x+=nx*ov; b.y+=ny*ov;
-        const dvx=b.vx-a.vx, dvy=b.vy-a.vy, dot=dvx*nx+dvy*ny;
-        if (dot<0) {
-          const imp=dot*(1+REST)*.5;
-          const speed=Math.abs(dot);
-          a.vx+=imp*nx; a.vy+=imp*ny;
-          b.vx-=imp*nx; b.vy-=imp*ny;
-          ballHit(a.id, b.id, speed);
+        const dvx=b.vx-a.vx,dvy=b.vy-a.vy,dot=dvx*nx+dvy*ny;
+        if(dot<0){
+          const imp=dot*(1+REST)*.5, sp=Math.abs(dot);
+          a.vx+=imp*nx; a.vy+=imp*ny; b.vx-=imp*nx; b.vy-=imp*ny;
+          // Ball-ball: queue at half volume weight
+          const key=1e6+Math.min(a.id,b.id)*100+Math.max(a.id,b.id);
+          const vel=Math.min(0.6,sp*0.08)*0.6; // quieter than walls
+          queueHit(key,BALL_CD,vel,a.id);
         }
       }
     }
   }
 }
 
-function draw() {
+function draw(){
   ctx.fillStyle='#07070c';
   ctx.fillRect(0,0,W,H);
-  for (const b of balls) {
-    ctx.globalAlpha=b.a;
-    ctx.fillStyle=b.fill;
-    ctx.beginPath();
-    ctx.arc(b.x,b.y,b.r,0,Math.PI*2);
-    ctx.fill();
+  for(const b of balls){
+    ctx.globalAlpha=b.a; ctx.fillStyle=b.fill;
+    ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,Math.PI*2); ctx.fill();
   }
   ctx.globalAlpha=1;
 }
 
-function loop() {
+function loop(){
   requestAnimationFrame(loop);
   physicsStep();
   flushHits();
@@ -332,25 +292,25 @@ function loop() {
 // ═══════════════════════════════════════════════════════
 //  MOTION
 // ═══════════════════════════════════════════════════════
-function onMotion(e) {
+function onMotion(e){
   const a=e.accelerationIncludingGravity||{};
-  GX=Math.max(-.8,Math.min(.8, (a.x||0)*.058));
-  GY=Math.max(-.8,Math.min(.8,-(a.y||0)*.058));
+  GX=Math.max(-.9,Math.min(.9,(a.x||0)*.062));
+  GY=Math.max(-.9,Math.min(.9,-(a.y||0)*.062));
 }
 
 // ═══════════════════════════════════════════════════════
 //  UI
 // ═══════════════════════════════════════════════════════
-document.getElementById('splash').addEventListener('click', async () => {
+document.getElementById('splash').addEventListener('click',async()=>{
   initAudio();
-  try {
-    if (typeof DeviceMotionEvent!=='undefined' &&
-        typeof DeviceMotionEvent.requestPermission==='function') {
+  try{
+    if(typeof DeviceMotionEvent!=='undefined'&&
+       typeof DeviceMotionEvent.requestPermission==='function'){
       const r=await DeviceMotionEvent.requestPermission();
-      if (r!=='granted') throw new Error('denied');
+      if(r!=='granted') throw new Error('denied');
     }
     window.addEventListener('devicemotion',onMotion,{passive:true});
-  } catch(e){ console.warn('Motion:',e.message); }
+  }catch(e){console.warn('Motion:',e.message);}
   document.getElementById('splash').classList.add('gone');
   document.getElementById('strip').classList.add('show');
 });
@@ -360,7 +320,7 @@ document.querySelectorAll('.chip').forEach(btn=>{
     document.querySelectorAll('.chip').forEach(c=>c.classList.remove('active'));
     btn.classList.add('active');
     const m=btn.dataset.mode;
-    modeName=m;
+    modeName=m; snd=MODES_SND[m]||MODES_SND.maracas;
     palFn=PALETTES[m]||PALETTES.maracas;
     document.getElementById('mode-label').textContent=btn.textContent;
     recolor();
@@ -369,14 +329,13 @@ document.querySelectorAll('.chip').forEach(btn=>{
 
 document.getElementById('ic-mute').addEventListener('click',()=>{
   muted=!muted;
-  if (master) master.gain.value=muted?0:0.65;
+  if(master) master.gain.value=muted?0:0.65;
   document.getElementById('ic-mute').textContent=muted?'✕':'♪';
   document.getElementById('ic-mute').classList.toggle('on',!muted);
 });
 
 document.getElementById('ic-reset').addEventListener('click',()=>initBalls());
 
-// BOOT
 resize();
 loop();
 </script>

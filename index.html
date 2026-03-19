@@ -55,10 +55,14 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;}
 'use strict';
 
 // ═══════════════════════════════════════════════════════
-//  AUDIO — 3-layer maraca model, no setTimeout
-//  Jerk → transient burst (bright, loud, instant)
-//  Jerk decay → tail grains (scheduled via AudioContext time)
-//  Velocity → rustle (soft continuous)
+//  MARACA SOUND MODEL — simplified, percussive
+//
+//  Real maraca = ONE simultaneous impact of many seeds.
+//  Not a cascade. Not a tail. One sharp hit.
+//
+//  Two layers only:
+//  1. IMPACT  — jerk spike → 3-5 bursts ALL at time=now
+//  2. RUSTLE  — sustained movement → soft continuous grain
 // ═══════════════════════════════════════════════════════
 let AC = null, master = null, muted = false;
 let noiseBuf = null;
@@ -67,30 +71,26 @@ const PENTA = [523.25,587.33,659.25,783.99,880.00,1046.5,1174.7,1318.5,1568.0,17
 const bellCd = new Map();
 
 const MODES_CFG = {
-  maracas:{ fLo:3500, fHi:7500, q:1.4, isBell:false },
-  shaker: { fLo:5000, fHi:10000,q:0.9, isBell:false },
-  rain:   { fLo:600,  fHi:2200, q:0.5, isBell:false },
-  seeds:  { fLo:2000, fHi:5000, q:2.2, isBell:false },
+  maracas:{ fLo:3500, fHi:8000, q:1.5, isBell:false },
+  shaker: { fLo:5000, fHi:11000,q:1.0, isBell:false },
+  rain:   { fLo:600,  fHi:2500, q:0.5, isBell:false },
+  seeds:  { fLo:2000, fHi:5500, q:2.0, isBell:false },
   bells:  { fLo:0,    fHi:0,    q:0,   isBell:true  },
 };
 let cfg = MODES_CFG.maracas;
 let modeName = 'maracas';
 
-// Motion state
-const mot = { ax:0,ay:0,az:0, pax:0,pay:0,paz:0, jerk:0, vel:0 };
+const mot = { pax:0, pay:0, paz:0, jerk:0, vel:0 };
 let grainCount = 0, motionOn = false;
-
-// Per-layer cooldowns (ms)
-let lastTransient = 0;
-let lastRustle    = 0;
+let lastImpact = 0, lastRustle = 0;
 
 function initAudio() {
   if (AC) return;
   AC = new (window.AudioContext || window.webkitAudioContext)();
   const comp = AC.createDynamicsCompressor();
-  comp.threshold.value=-18; comp.knee.value=12;
-  comp.ratio.value=4; comp.attack.value=0.003; comp.release.value=0.15;
-  master = AC.createGain(); master.gain.value = 2.2;
+  comp.threshold.value=-16; comp.knee.value=10;
+  comp.ratio.value=4; comp.attack.value=0.002; comp.release.value=0.12;
+  master = AC.createGain(); master.gain.value = 2.0;
   master.connect(comp); comp.connect(AC.destination);
   const sb=AC.createBuffer(1,1,AC.sampleRate);
   const ss=AC.createBufferSource(); ss.buffer=sb;
@@ -113,74 +113,62 @@ function buildNoise() {
   }
 }
 
-// Schedule a noise burst at AudioContext time `when`
-function scheduleBurst(when, freq, Q, vol, dec) {
-  if(!AC||!noiseBuf||muted||vol<0.005) return;
+// One noise burst at AudioContext time `when`, instant on, pure decay
+function burst(when, freq, Q, vol, dec) {
+  if(!AC||!noiseBuf||muted||vol<0.004) return;
   grainCount++;
   const off=Math.random()*(noiseBuf.duration-0.05);
   const src=AC.createBufferSource();
   src.buffer=noiseBuf;
-  src.loopStart=off; src.loopEnd=off+0.03+Math.random()*0.04;
+  src.loopStart=off; src.loopEnd=off+0.025+Math.random()*0.025;
   src.loop=true;
-  src.playbackRate.value=0.7+Math.random()*0.6;
+  src.playbackRate.value=0.75+Math.random()*0.55;
   const bp=AC.createBiquadFilter();
   bp.type='bandpass';
-  bp.frequency.value=freq*(0.82+Math.random()*0.36);
-  bp.Q.value=Q*(0.55+Math.random()*0.9);
+  bp.frequency.value=freq*(0.85+Math.random()*0.3);
+  bp.Q.value=Q*(0.6+Math.random()*0.8);
   const env=AC.createGain();
-  env.gain.setValueAtTime(vol,when);
-  env.gain.exponentialRampToValueAtTime(0.0001,when+dec);
+  // INSTANT on — vol at exactly `when`, then decay
+  env.gain.setValueAtTime(vol, when);
+  env.gain.exponentialRampToValueAtTime(0.0001, when+dec);
   src.connect(bp); bp.connect(env); env.connect(master);
-  src.start(when); src.stop(when+dec+0.004);
+  src.start(when); src.stop(when+dec+0.003);
 }
 
-// ── TRANSIENT: one big burst when jerk peaks ─────────
-function fireTransient(jerkNorm) {
-  const now=AC.currentTime;
-  const m=cfg;
-  const vol = 1.6 * jerkNorm;
-  // Crack: instant, very short (4-8ms), loud
-  scheduleBurst(now, m.fHi*(0.9+jerkNorm*0.2), m.q*0.6, vol*1.4, 0.004+jerkNorm*0.004);
-  // Body: slightly longer body
-  scheduleBurst(now, m.fLo*(1.1+jerkNorm*0.3), m.q*1.0, vol*0.9, 0.007+jerkNorm*0.008);
-  // Sub-crack: tiny second hit 3ms later (seeds arriving slightly after)
-  scheduleBurst(now+0.003, m.fHi*(0.7+jerkNorm*0.4), m.q*0.8, vol*0.5, 0.005+jerkNorm*0.003);
-}
+// ── IMPACT: all bursts at time=now, simultaneous ─────
+// Strength 0-1 controls: how many layers, how loud, how bright
+function fireImpact(strength) {
+  const now = AC.currentTime;
+  const m = cfg;
+  const n = 2 + Math.floor(strength * 4); // 2-6 simultaneous layers
 
-// ── TAIL: seeds scattering — scheduled ahead using AC time ──
-// No setTimeout! All bursts pre-scheduled at exact future times.
-function fireTail(jerkNorm) {
-  const now=AC.currentTime;
-  const m=cfg;
-  const nBursts=3+Math.floor(jerkNorm*5); // 3-8 bursts
-  for(let i=0;i<nBursts;i++){
-    const t = now + 0.010 + i*(0.012+Math.random()*0.018);
-    const fade = i/nBursts;                     // 0→1
-    const vol  = 0.9*jerkNorm*(1-fade*0.75)*(0.4+Math.random()*0.6);
-    const freq = m.fLo + Math.random()*(m.fHi-m.fLo)*(1-fade*0.3);
-    const dec  = 0.012+Math.random()*0.020+fade*0.010;
-    scheduleBurst(t, freq, m.q, vol, dec);
+  for (let i = 0; i < n; i++) {
+    // Each layer covers a different frequency band — together = full spectrum hit
+    const t = (m.fHi - m.fLo);
+    const freq = m.fLo + (i/n)*t + Math.random()*t*0.25;
+    const vol  = strength * 1.4 * (0.6 + Math.random()*0.7) * (1 - i*0.12);
+    // All at exactly `now` — simultaneous
+    // Decay very short: 8-20ms. Sharp percussive click.
+    const dec  = 0.008 + Math.random()*0.012;
+    burst(now, freq, m.q, vol, dec);
   }
 }
 
-// ── RUSTLE: soft continuous layer when moving ─────────
+// ── RUSTLE: soft grain when moving ───────────────────
 function maybeRustle(velNorm) {
-  if(velNorm<0.06) return;
-  const now=performance.now();
-  const interval=Math.max(8, 38-velNorm*28);
-  if(now-lastRustle<interval) return;
-  lastRustle=now;
-  const m=cfg;
-  const vol=0.42*velNorm*(0.35+Math.random()*0.55);
-  scheduleBurst(
-    AC.currentTime,
-    m.fLo*(0.8+Math.random()*1.2), m.q*0.7,
-    vol, 0.016+Math.random()*0.024
-  );
+  if(velNorm < 0.05) return;
+  const now = performance.now();
+  const interval = Math.max(10, 50 - velNorm*38);
+  if(now - lastRustle < interval) return;
+  lastRustle = now;
+  const m = cfg;
+  const freq = m.fLo*(0.7+Math.random()*0.9);
+  const vol  = 0.30 * velNorm * (0.3+Math.random()*0.5);
+  burst(AC.currentTime, freq, m.q*0.5, vol, 0.018+Math.random()*0.018);
 }
 
 // ── Bell FM ───────────────────────────────────────────
-function bellNote(noteIdx,vel) {
+function bellNote(noteIdx, vel) {
   if(!AC||muted) return;
   const now=performance.now();
   if(now-(bellCd.get(noteIdx)||0)<160) return;
@@ -194,39 +182,30 @@ function bellNote(noteIdx,vel) {
   modG.gain.setValueAtTime(freq*vel*2.5,t);
   modG.gain.exponentialRampToValueAtTime(0.001,t+0.18);
   mod.connect(modG); modG.connect(car.frequency);
-  const vol=0.32*(0.4+vel*0.6),dec=0.4+vel*0.6;
+  const vol=0.32*(0.4+vel*0.6), dec=0.4+vel*0.6;
   carE.gain.setValueAtTime(vol,t);
   carE.gain.exponentialRampToValueAtTime(0.0001,t+dec);
   car.connect(carE); carE.connect(master);
   mod.start(t); car.start(t); mod.stop(t+dec+.05); car.stop(t+dec+.05);
 }
 
-// ── Motion processor ──────────────────────────────────
-function processMotion(ax,ay,az) {
-  // Jerk = delta acceleration (raw, unscaled)
+// ── Motion ────────────────────────────────────────────
+function processMotion(ax, ay, az) {
   const djx=ax-mot.pax, djy=ay-mot.pay, djz=az-mot.paz;
   const jerk=Math.sqrt(djx*djx+djy*djy+djz*djz);
   mot.pax=ax; mot.pay=ay; mot.paz=az;
   mot.jerk=jerk;
-
-  // Velocity = smoothed |acc| minus gravity
   const mag=Math.sqrt(ax*ax+ay*ay+az*az);
-  const speed=Math.max(0,(mag-9.5)*0.10);
-  mot.vel=mot.vel*0.78+speed*0.22;
-
+  mot.vel=mot.vel*0.75+Math.max(0,(mag-9.5)*0.10)*0.25;
   if(!AC||muted||cfg.isBell) return;
-
-  // TRANSIENT threshold: raw jerk > 1.5 (was 0.28*normalised)
-  // At jerk=2 → fires. At jerk=10 (hard shake) → loud.
   const now=performance.now();
-  if(jerk>0.8 && now-lastTransient>55) {
-    lastTransient=now;
-    const strength=Math.min(1, jerk*0.12); // 0.8→0.10, 2→0.24, 10→1.0
-    fireTransient(strength);
-    fireTail(strength);
+  // Fire impact on any jerk > 0.8 (raw units)
+  // cooldown 60ms = max ~16 hits/sec = tight percussive rhythm possible
+  if(jerk > 0.8 && now-lastImpact > 60) {
+    lastImpact = now;
+    const strength = Math.min(1, jerk * 0.10);
+    fireImpact(strength);
   }
-
-  // RUSTLE always when moving
   maybeRustle(Math.min(1, mot.vel));
 }
 
@@ -235,8 +214,7 @@ function processMotion(ax,ay,az) {
 // ═══════════════════════════════════════════════════════
 const cv=document.getElementById('cv');
 const ctx=cv.getContext('2d');
-let W=0,H=0,dpr=1;
-let GX=0,GY=0.38;
+let W=0,H=0,dpr=1,GX=0,GY=0.38;
 const BALL_N=165, REST=0.52, FRIC=0.996, SUBSTEPS=3;
 let balls=[];
 
@@ -250,7 +228,7 @@ const PALETTES={
 let palFn=PALETTES.maracas;
 
 function mkBall(i){
-  const r=2+Math.random()*2.5, p=palFn();
+  const r=2+Math.random()*2.5,p=palFn();
   return{id:i,x:r+Math.random()*(W-r*2),y:r+Math.random()*(H*0.6),
     vx:(Math.random()-.5)*4,vy:(Math.random()-.5)*4,r,
     fill:`hsl(${p.h},${p.s}%,${p.l}%)`,a:0.68+Math.random()*0.32,
@@ -312,9 +290,6 @@ function draw(){
 
 function loop(){requestAnimationFrame(loop);physicsStep();draw();}
 
-// ═══════════════════════════════════════════════════════
-//  MOTION
-// ═══════════════════════════════════════════════════════
 function onMotion(e){
   const a=e.accelerationIncludingGravity||{};
   const ax=a.x||0,ay=a.y||0,az=a.z||0;
@@ -330,13 +305,8 @@ const dbg=document.createElement('div');
 dbg.style.cssText='position:fixed;top:10px;left:10px;z-index:99;font:11px monospace;color:lime;pointer-events:none;line-height:1.7;text-shadow:0 0 4px #000';
 document.body.appendChild(dbg);
 setInterval(()=>{
-  dbg.innerHTML=
-    'AC: '+(AC?AC.state:'null')+'<br>'+
-    'jerk: '+mot.jerk.toFixed(1)+'<br>'+
-    'vel: '+mot.vel.toFixed(3)+'<br>'+
-    'grains: '+grainCount+'<br>'+
-    'motion: '+(motionOn?'YES':'NO');
-},200);
+  dbg.innerHTML='jerk: '+mot.jerk.toFixed(1)+'  grains: '+grainCount+'  '+(motionOn?'●':'○');
+},150);
 
 document.getElementById('splash').addEventListener('click',async()=>{
   initAudio();
@@ -366,7 +336,7 @@ document.querySelectorAll('.chip').forEach(btn=>{
 
 document.getElementById('ic-mute').addEventListener('click',()=>{
   muted=!muted;
-  if(master) master.gain.value=muted?0:1.8;
+  if(master) master.gain.value=muted?0:2.0;
   document.getElementById('ic-mute').textContent=muted?'✕':'♪';
   document.getElementById('ic-mute').classList.toggle('on',!muted);
 });

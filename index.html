@@ -70,13 +70,12 @@ function initAudio() {
   if (AC) return;
   AC = new (window.AudioContext || window.webkitAudioContext)();
   const comp = AC.createDynamicsCompressor();
-  comp.threshold.value = -16; comp.knee.value = 8;
-  comp.ratio.value = 5;       comp.attack.value = 0.001;
-  comp.release.value = 0.10;
-  master = AC.createGain(); master.gain.value = 1.9;
+  comp.threshold.value=-16; comp.knee.value=8;
+  comp.ratio.value=5; comp.attack.value=0.001; comp.release.value=0.10;
+  master = AC.createGain(); master.gain.value=1.9;
   master.connect(comp); comp.connect(AC.destination);
-  const sb = AC.createBuffer(1,1,AC.sampleRate);
-  const ss = AC.createBufferSource();
+  const sb=AC.createBuffer(1,1,AC.sampleRate);
+  const ss=AC.createBufferSource();
   ss.buffer=sb; ss.connect(AC.destination); ss.start(0);
   if(AC.state==='suspended') AC.resume();
   buildWhiteNoise();
@@ -89,68 +88,51 @@ function buildWhiteNoise() {
   for(let i=0;i<len;i++) d[i]=Math.random()*2-1;
 }
 
-// ── 2. DRY GRAIN — tight, sandy, no softness ─────────
-// Key: very narrow bandpass + instant attack + hard decay curve
-// This makes each grain sound like a dry particle hit, not a whoosh.
-function dryGrain(when, freq, Q, vol, decSec) {
+// ── 2. GRAIN — single bandpass, instant on, pure decay ───
+// No double filtering, no softening. White noise → bandpass → decay.
+function grain(when, freq, Q, vol, decSec) {
   if(!AC||!whiteBuf||muted||vol<0.003) return;
-  const off=Math.random()*(whiteBuf.duration-0.04);
+  const off=Math.random()*(whiteBuf.duration-0.05);
   const src=AC.createBufferSource();
   src.buffer=whiteBuf;
-  src.loopStart=off; src.loopEnd=off+0.008+Math.random()*0.008;
+  src.loopStart=off; src.loopEnd=off+0.012+Math.random()*0.015;
   src.loop=true;
-  // Slight pitch variety without rounding the attack
-  src.playbackRate.value=0.9+Math.random()*0.4;
-
-  // Narrow bandpass = dry, focused, sandy
+  src.playbackRate.value=0.85+Math.random()*0.35;
   const bp=AC.createBiquadFilter();
   bp.type='bandpass';
-  bp.frequency.value=freq;
-  bp.Q.value=Q;
-
-  // Second narrower bandpass in series — kills roundness further
-  const bp2=AC.createBiquadFilter();
-  bp2.type='bandpass';
-  bp2.frequency.value=freq*(0.9+Math.random()*0.2);
-  bp2.Q.value=Q*1.8;
-
+  bp.frequency.value=freq*(0.82+Math.random()*0.36);
+  bp.Q.value=Q*(0.6+Math.random()*0.8);
   const env=AC.createGain();
-  // INSTANT on — no ramp at all
+  // Instant on — setValueAtTime, then pure exponential decay
   env.gain.setValueAtTime(vol, when);
-  // Hard exponential decay — short, no tail
   env.gain.exponentialRampToValueAtTime(0.0001, when+decSec);
-
-  src.connect(bp); bp.connect(bp2); bp2.connect(env); env.connect(master);
-  src.start(when); src.stop(when+decSec+0.002);
+  src.connect(bp); bp.connect(env); env.connect(master);
+  src.start(when); src.stop(when+decSec+0.003);
 }
 
-// ── 3. SHELL CLICK — dry body snap ───────────────────
-// Mandatory layer: 1000-3000 Hz, 5-15ms, hard and short
+// ── 3. SHELL CLICK ───────────────────────────────────
 function shellClick(when, energy) {
   if(!AC||!whiteBuf||muted) return;
   const freq=1200+Math.random()*1600;
-  const vol=0.42*energy*(0.6+Math.random()*0.5);
-  const dec=0.004+Math.random()*0.011; // 4-15ms max
-  dryGrain(when, freq, 5+Math.random()*4, vol, dec);
+  const vol=0.38*energy*(0.6+Math.random()*0.5);
+  grain(when, freq, 4+Math.random()*4, vol, 0.004+Math.random()*0.012);
 }
 
 // ── 4. MODE CONFIGS ───────────────────────────────────
 const MODES_SND = {
-  maracas:{ fLo:3500, fHi:7500, qLo:3.0, qHi:7.0 }, // tight, sandy
-  shaker: { fLo:5500, fHi:11000,qLo:2.5, qHi:6.0 },
-  rain:   { fLo:500,  fHi:2000, qLo:1.5, qHi:4.0 },
-  seeds:  { fLo:2000, fHi:5000, qLo:4.0, qHi:8.0 },
+  maracas:{ fLo:3000, fHi:7500, qLo:1.5, qHi:4.5 },
+  shaker: { fLo:5000, fHi:11000,qLo:1.0, qHi:3.0 },
+  rain:   { fLo:500,  fHi:2200, qLo:0.5, qHi:2.0 },
+  seeds:  { fLo:1800, fHi:5000, qLo:2.0, qHi:5.5 },
   bells:  { fLo:0,    fHi:0,    qLo:0,   qHi:0   },
 };
 let sndMode=MODES_SND.maracas;
 let modeName='maracas';
 
-// ── 5. BURST LAYER — large impulse peaks ─────────────
-// Fires on strong jerk: dense cluster of dry grains, all near t=0
+// ── 5. BURST LAYER — big impulse ─────────────────────
 let burstCount=0;
 
 function grainCount(energy) {
-  // log saturation: 5 at min → 40 at max, hard cap 50
   return Math.min(50, Math.round(5 + Math.log1p(energy*12)/Math.log1p(12)*35));
 }
 
@@ -159,57 +141,46 @@ function triggerBurst(energy) {
   burstCount++;
   const now=AC.currentTime;
   const m=sndMode;
-  const burstDur=0.025+energy*0.065; // 25-90ms (shorter = snappier)
+  const burstDur=0.025+energy*0.070;
   const n=grainCount(energy);
-  // Brightness: more energy → push toward high freq
   const fCenter=m.fLo+energy*(m.fHi-m.fLo);
-
   for(let i=0;i<n;i++){
-    // ^2 distribution = dense cluster at front
     const r=Math.random();
-    const tOff=r*r*burstDur;
+    const tOff=r*r*burstDur; // clustered at front
     const when=now+tOff;
     const freq=fCenter*(0.65+Math.random()*0.70);
     const Q=m.qLo+Math.random()*(m.qHi-m.qLo);
     const vol=(0.45+Math.random()*0.55)*energy*0.85;
-    const dec=0.008+Math.random()*0.018; // 8-26ms — short, dry
-    dryGrain(when, freq, Q, vol, dec);
+    const dec=0.008+Math.random()*0.018; // 8-26ms — short
+    grain(when, freq, Q, vol, dec);
   }
   shellClick(now, energy);
 }
 
-// ── 6. MICRO-RATTLE LAYER — small continuous dryness ─
-// Activates at low sustained energy (0.04+).
-// NOT continuous noise — individual micro-grains, each ≤15ms.
-// Rate proportional to energy: sparse at low, dense at high.
-// Random jitter on timing/freq/vol prevents mechanical feel.
+// ── 6. MICRO-RATTLE LAYER — sandy "chika-chika" ──────
+// Fills low-energy continuous movement with dry sand-like ticking.
+// Each micro-grain: ≤18ms, instant on, no tail.
+// Rate: sparse at low energy, dense at high (but never continuous).
+// Jitter on timing prevents mechanical feel.
 
-let lastMicroT=0; // last micro-grain fired (performance.now)
+let lastMicroT=0;
 
 function maybeMicroRattle(energy) {
-  if(!AC||muted||sndMode.fLo===0||energy<0.04) return;
+  if(!AC||muted||sndMode.fLo===0||energy<0.035) return;
   const now=performance.now();
-
-  // Rate: 80ms gap at e=0.04 → 12ms at e=1.0
-  // Formula: interval = 80 - energy*68, floored at 12ms
-  const interval=Math.max(12, 80-energy*68);
-
-  // Add jitter ±30% so it never sounds like a metronome
-  const jitter=(0.7+Math.random()*0.6)*interval;
-  if(now-lastMicroT < jitter) return;
+  // interval: 75ms at e=0.035 → 10ms at e=1.0, ±30% jitter
+  const base=Math.max(10, 75-energy*65);
+  const jittered=base*(0.7+Math.random()*0.6);
+  if(now-lastMicroT < jittered) return;
   lastMicroT=now;
-
   const m=sndMode;
   const t=AC.currentTime;
-
-  // Micro-grain: very narrow, very short, dry
-  // Freq biased toward upper-mid (sandy texture)
-  const freq=m.fLo*0.8 + Math.random()*(m.fHi-m.fLo)*0.6;
-  const Q=m.qLo*1.2+Math.random()*(m.qHi-m.qLo)*0.5;
-  const vol=0.18*energy*(0.3+Math.random()*0.55);
-  const dec=0.004+Math.random()*0.011; // 4-15ms — hard limit
-
-  dryGrain(t, freq, Q, vol, dec);
+  // Freq: upper-mid, gritty
+  const freq=m.fLo*0.9+Math.random()*(m.fHi-m.fLo)*0.55;
+  const Q=m.qLo+Math.random()*(m.qHi-m.qLo)*0.6;
+  const vol=0.22*energy*(0.3+Math.random()*0.55);
+  const dec=0.005+Math.random()*0.013; // 5-18ms max — no tail
+  grain(t, freq, Q, vol, dec);
 }
 
 // ── 7. BELL MODE ─────────────────────────────────────
@@ -238,49 +209,36 @@ function triggerBell(noteIdx,energy) {
 }
 
 // ── 8. MOTION → ENERGY → GESTURE ─────────────────────
-//
-//  energy_raw = |Δacc|
-//  energy     = lerp(prev, raw, 0.2)
-//  BURST:  fire on rising edge above threshold (>0.10)
-//  MICRO:  fire on any sustained energy >0.04 (between bursts too)
-//
 let motionOn=false;
 const mot={pax:0,pay:0,paz:0,energy:0,prevEnergy:0};
 let lastBurst=0;
 let GX=0,GY=0.38;
 
 const BURST_THRESHOLD=0.10;
-const BURST_MIN_GAP=55; // ms — max ~18 bursts/sec
+const BURST_MIN_GAP=55;
 
 function onMotion(e) {
   const a=e.accelerationIncludingGravity||{};
   const ax=a.x||0,ay=a.y||0,az=a.z||0;
-
   const dx=ax-mot.pax,dy=ay-mot.pay,dz=az-mot.paz;
   mot.pax=ax; mot.pay=ay; mot.paz=az;
-
   const raw=Math.sqrt(dx*dx+dy*dy+dz*dz);
   mot.prevEnergy=mot.energy;
   mot.energy=mot.energy*0.8+raw*0.2;
-
   const now=performance.now();
   const strength=Math.min(1,mot.energy*0.07);
 
-  // BURST: rising edge + threshold + rate limit
-  if(mot.energy>BURST_THRESHOLD &&
-     mot.energy>mot.prevEnergy &&
-     now-lastBurst>BURST_MIN_GAP) {
+  // BURST: fire on ANY jerk peak above threshold, both directions.
+  // Use raw (instantaneous) jerk, not smoothed energy — catches
+  // the return stroke (up/back) which smoothed energy misses.
+  const rawStrength=Math.min(1, raw*0.055);
+  if(raw>1.8 && now-lastBurst>BURST_MIN_GAP) {
     lastBurst=now;
-    if(modeName==='bells')
-      triggerBell(Math.floor(Math.random()*PENTA.length),strength);
-    else
-      triggerBurst(strength);
+    if(modeName==='bells') triggerBell(Math.floor(Math.random()*PENTA.length),rawStrength);
+    else triggerBurst(rawStrength);
   }
-
-  // MICRO-RATTLE: runs independently, lower threshold
-  // Active even when energy is not rising — fills gaps between bursts
+  // MICRO-RATTLE: always active at low energy, fills gaps
   if(modeName!=='bells') maybeMicroRattle(strength);
-
   GX=Math.max(-.9,Math.min(.9, ax*.062));
   GY=Math.max(-.9,Math.min(.9,-ay*.062));
 }

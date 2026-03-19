@@ -217,7 +217,7 @@ function scheduleBurst(strength) {
   fireAccent(strength);
 
   // grain count: log-saturated 4..18 — never a flood
-  const n = Math.round(4 + Math.log1p(strength * 8) / Math.log1p(8) * 14);
+  const n = Math.round(6 + Math.log1p(strength * 8) / Math.log1p(8) * 20);
 
   // burst duration: 25-65ms — short, compact
   const burstDur = 0.025 + strength * 0.040;
@@ -354,8 +354,8 @@ let jerkPrev=0;         // previous smoothed jerk (rising edge detection)
 let lastBurstT=0;       // ms when last burst fired
 let microStrength=0;    // sustained energy for micro-rattle
 
-const BURST_THRESHOLD = 0.12;   // smoothed jerk to trigger burst
-const BURST_COOLDOWN  = 65;     // ms min between bursts (~15/sec max)
+const BURST_THRESHOLD = 0.08;   // smoothed jerk to trigger burst
+const BURST_COOLDOWN  = 48;     // ms min between bursts (~20/sec max)
 
 function onMotion(e){
   const a=e.accelerationIncludingGravity||{};
@@ -390,18 +390,24 @@ function onMotion(e){
   const now=performance.now();
   const strength=Math.min(1, jerkSmooth*0.09);
 
-  // BURST: rising edge of smoothed jerk above threshold
-  // Rising edge = jerkSmooth > jerkPrev ensures we catch the peak, not the tail
-  if(jerkSmooth > BURST_THRESHOLD &&
-     jerkSmooth >= jerkPrev &&
-     now - lastBurstT > BURST_COOLDOWN){
+  // BURST: two trigger paths — catches BOTH directions:
+  // Path A: smoothed rising edge (main gesture peak)
+  // Path B: raw jerk spike (return stroke — phone coming back)
+  const smoothedPeak = jerkSmooth > BURST_THRESHOLD && jerkSmooth >= jerkPrev;
+  const rawSpike     = jRaw > 2.8; // raw threshold for sharp return
+  const gap          = now - lastBurstT;
+
+  if((smoothedPeak || rawSpike) && gap > BURST_COOLDOWN){
     lastBurstT = now;
     burstActive = true;
-    burstEndTime = now + 70 + strength*50; // burst window
+    burstEndTime = now + 60 + strength*40;
+    const s = rawSpike && !smoothedPeak
+      ? Math.min(1, jRaw*0.06)   // return stroke strength
+      : strength;
     if(modeName==='bells')
       bellClick(Math.floor(Math.random()*PENTA.length), jMag);
     else
-      scheduleBurst(strength);
+      scheduleBurst(s);
   }
 
   // MICRO-RATTLE: only when NOT in burst silence window

@@ -101,7 +101,7 @@ var MODES = {
   maracas:{ fLo:1200, fHi:3500, qLo:0.5, qHi:1.5, vol:1.05, dec:0.020 },
   shaker: { fLo:5000, fHi:10000,qLo:1.5,qHi:4,  vol:0.45, dec:0.008 },
   rain:   { fLo:600,  fHi:2500, qLo:0.8,qHi:2.5,vol:0.50, dec:0.030 },
-  seeds:  { fLo:2000, fHi:5500, qLo:2.5,qHi:6,  vol:0.52, dec:0.014 },
+  seeds:  { fLo:0,    fHi:0,    qLo:0,   qHi:0,  vol:0,    dec:0     },
   bells:  { fLo:0,    fHi:0,    qLo:0,  qHi:0,  vol:0.30, dec:0     },
 };
 var snd = MODES.maracas;
@@ -232,6 +232,40 @@ function wallBell(bid,ni,sp){
   bellClick(ni,sp);
 }
 
+// Kalimba / xylophone — warm muted thud with pitch
+// Short sine decay, slight FM for woodiness, no long tail
+var PENTA2=[196,220,246.94,293.66,329.63,392,440,493.88,587.33,659.25]; // G3 pentatonic, lower+warmer
+var kalCd={};
+function kalimbaClick(ni,sp){
+  if(!AC||muted) return;
+  var now=performance.now();
+  if(now-(kalCd[ni]||0)<90) return;
+  kalCd[ni]=now;
+  var vel=Math.min(1,sp*0.07); if(vel<0.08) return;
+  var t=AC.currentTime;
+  var freq=PENTA2[ni%PENTA2.length];
+
+  // Slight FM: modulator for woody attack transient
+  var mod=AC.createOscillator(), modG=AC.createGain();
+  var car=AC.createOscillator(), carE=AC.createGain();
+  mod.type='sine'; mod.frequency.value=freq*3.1;
+  car.type='sine'; car.frequency.value=freq;
+  // FM depth: strong at start, gone in 20ms → wooden attack
+  modG.gain.setValueAtTime(freq*vel*1.8, t);
+  modG.gain.exponentialRampToValueAtTime(0.001, t+0.020);
+  mod.connect(modG); modG.connect(car.frequency);
+
+  // Envelope: fast attack, medium decay — muted thud, not ring
+  var vol=0.38*(0.35+vel*0.65);
+  var dec=0.12+vel*0.10; // 120-220ms — shorter than bells
+  carE.gain.setValueAtTime(0,t);
+  carE.gain.linearRampToValueAtTime(vol, t+0.004); // 4ms attack
+  carE.gain.exponentialRampToValueAtTime(0.0001, t+dec);
+  car.connect(carE); carE.connect(master);
+  mod.start(t); car.start(t);
+  mod.stop(t+dec+0.02); car.stop(t+dec+0.02);
+}
+
 var cv=document.getElementById('cv');
 var ctx=cv.getContext('2d');
 var W=0,H=0,dpr=1,GX=0,GY=0.38;
@@ -276,10 +310,10 @@ function physicsStep(){
     }
     for(var i=0;i<balls.length;i++){
       var b=balls[i];
-      if(b.x-b.r<0){var sp=Math.abs(b.vx);b.x=b.r;b.vx=sp*REST;if(modeName==='bells')wallBell(b.id,b.ni,sp);}
-      else if(b.x+b.r>W){var sp=Math.abs(b.vx);b.x=W-b.r;b.vx=-sp*REST;if(modeName==='bells')wallBell(b.id,b.ni,sp);}
-      if(b.y-b.r<0){var sp=Math.abs(b.vy);b.y=b.r;b.vy=sp*REST;if(modeName==='bells')wallBell(b.id,b.ni,sp);}
-      else if(b.y+b.r>H){var sp=Math.abs(b.vy);b.y=H-b.r;b.vy=-sp*REST;if(modeName==='bells')wallBell(b.id,b.ni,sp);}
+      if(b.x-b.r<0){var sp=Math.abs(b.vx);b.x=b.r;b.vx=sp*REST;if(modeName==='bells')wallBell(b.id,b.ni,sp);else if(modeName==='seeds')kalimbaClick(b.ni,sp);}
+      else if(b.x+b.r>W){var sp=Math.abs(b.vx);b.x=W-b.r;b.vx=-sp*REST;if(modeName==='bells')wallBell(b.id,b.ni,sp);else if(modeName==='seeds')kalimbaClick(b.ni,sp);}
+      if(b.y-b.r<0){var sp=Math.abs(b.vy);b.y=b.r;b.vy=sp*REST;if(modeName==='bells')wallBell(b.id,b.ni,sp);else if(modeName==='seeds')kalimbaClick(b.ni,sp);}
+      else if(b.y+b.r>H){var sp=Math.abs(b.vy);b.y=H-b.r;b.vy=-sp*REST;if(modeName==='bells')wallBell(b.id,b.ni,sp);else if(modeName==='seeds')kalimbaClick(b.ni,sp);}
     }
     for(var i=0;i<balls.length;i++){
       for(var j=i+1;j<balls.length;j++){

@@ -50,323 +50,325 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;}
     <button class="ic" id="ic-reset">↺</button>
   </div>
 </div>
-
 <script>
 'use strict';
-
-// ═══════════════════════════════════════════════════════
-//  PRINCIPLE: every physics collision = one sound event.
-//  No gesture detection. No burst model. No motion energy.
-//  Ball hits wall → click. Ball hits ball → click.
-//  Sound density comes from physics, not from signal processing.
-// ═══════════════════════════════════════════════════════
 
 // ── AUDIO ─────────────────────────────────────────────
 let AC = null, master = null, muted = false;
 let noiseBuf = null;
 
-// Mode sound params — tuned per material
 const MODES_SND = {
-  maracas:{ fLo:3000, fHi:7000, qLo:2.0, qHi:5.0, vol:0.85, dec:0.012 },
-  shaker: { fLo:2200, fHi: 5500,qLo:3.5, qHi:8.0, vol:0.58, dec:0.010 },
-  rain:   { fLo:600,  fHi:2500, qLo:0.8, qHi:2.5, vol:0.50, dec:0.030 },
-  seeds:  { fLo:2000, fHi:5500, qLo:2.5, qHi:6.0, vol:0.52, dec:0.014 },
-  bells:  { fLo:0,    fHi:0,    qLo:0,   qHi:0,   vol:0.30, dec:0    },
+maracas:{ fLo:3000, fHi:7000, qLo:2.0, qHi:5.0, vol:0.85, dec:0.012 },
+shaker: { fLo:5000, fHi:10000,qLo:1.5, qHi:4.0, vol:0.45, dec:0.008 },
+rain:   { fLo:600,  fHi:2500, qLo:0.8, qHi:2.5, vol:0.50, dec:0.030 },
+seeds:  { fLo:2000, fHi:5500, qLo:2.5, qHi:6.0, vol:0.52, dec:0.014 },
+bells:  { fLo:0,    fHi:0,    qLo:0,   qHi:0,   vol:0.30, dec:0     },
 };
 let snd = MODES_SND.maracas;
-let modeName = 'maracas';
+let modeName = ‘maracas’;
 
 function initAudio() {
-  if (AC) return;
-  AC = new (window.AudioContext || window.webkitAudioContext)();
-  const comp = AC.createDynamicsCompressor();
-  comp.threshold.value=-18; comp.knee.value=10;
-  comp.ratio.value=5; comp.attack.value=0.001; comp.release.value=0.10;
-  master = AC.createGain(); master.gain.value = 3.5;
-  master.connect(comp); comp.connect(AC.destination);
-  // iOS speaker unlock
-  const sb=AC.createBuffer(1,1,AC.sampleRate);
-  const ss=AC.createBufferSource();
-  ss.buffer=sb; ss.connect(AC.destination); ss.start(0);
-  if(AC.state==='suspended') AC.resume();
-  buildNoise();
+if (AC) return;
+AC = new (window.AudioContext || window.webkitAudioContext)();
+const comp = AC.createDynamicsCompressor();
+comp.threshold.value=-18; comp.knee.value=10;
+comp.ratio.value=5; comp.attack.value=0.001; comp.release.value=0.10;
+master = AC.createGain(); master.gain.value = 2.8;
+master.connect(comp); comp.connect(AC.destination);
+const sb=AC.createBuffer(1,1,AC.sampleRate);
+const ss=AC.createBufferSource();
+ss.buffer=sb; ss.connect(AC.destination); ss.start(0);
+if(AC.state===‘suspended’) AC.resume();
+buildNoise();
 }
 
 function buildNoise() {
-  const sr=AC.sampleRate, len=sr*2;
-  noiseBuf = AC.createBuffer(1, len, sr);
-  const d = noiseBuf.getChannelData(0);
-  // White noise — pure, unfiltered
-  for(let i=0;i<len;i++) d[i]=Math.random()*2-1;
+const sr=AC.sampleRate, len=sr*2;
+noiseBuf=AC.createBuffer(1,len,sr);
+const d=noiseBuf.getChannelData(0);
+for(let i=0;i<len;i++) d[i]=Math.random()*2-1;
 }
 
-// One collision click: white noise → bandpass → instant decay
-// speed: physics impact speed (pixels/frame) → maps to volume
+// One collision click
 function click(speed, isWall) {
-  if(!AC||!noiseBuf||muted) return;
-  const m = snd;
-  if(m.fLo === 0) return; // bells handled separately
-
-  const now = AC.currentTime;
-
-  // Volume scales with impact speed, walls louder than ball-ball
-  const velScale = Math.min(1, speed * 0.12);
-  if(velScale < 0.04) return;
-  const vol = m.vol * velScale * (isWall ? 1.0 : 0.55)
-              * (0.55 + Math.random()*0.45); // per-grain variety
-
-  // Frequency: random within mode range, slightly speed-dependent
-  const freq = m.fLo + Math.random()*(m.fHi - m.fLo)
-               * (0.7 + velScale*0.3);
-  const Q = m.qLo + Math.random()*(m.qHi - m.qLo);
-
-  // Duration: very short — 6-20ms for walls, 5-14ms for ball-ball
-  const dec = m.dec * (0.5 + velScale*0.7) * (0.7 + Math.random()*0.6);
-
-  const off = Math.random()*(noiseBuf.duration - 0.05);
-  const src = AC.createBufferSource();
-  src.buffer = noiseBuf;
-  src.loopStart = off;
-  src.loopEnd   = off + 0.010 + Math.random()*0.010;
-  src.loop = true;
-  src.playbackRate.value = 0.8 + Math.random()*0.5;
-
-  const bp = AC.createBiquadFilter();
-  bp.type = 'bandpass';
-  bp.frequency.value = freq;
-  bp.Q.value = Q;
-
-  const env = AC.createGain();
-  env.gain.setValueAtTime(vol, now);
-  env.gain.exponentialRampToValueAtTime(0.0001, now + dec);
-
-  src.connect(bp); bp.connect(env); env.connect(master);
-  src.start(now); src.stop(now + dec + 0.003);
+if(!AC||!noiseBuf||muted) return;
+const m=snd;
+if(m.fLo===0) return;
+const now=AC.currentTime;
+const velScale=Math.min(1, speed*0.045);
+if(velScale<0.04) return;
+const vol=m.vol*velScale*(isWall?1.0:0.55)*(0.55+Math.random()*0.45);
+const freq=m.fLo+Math.random()*(m.fHi-m.fLo)*(0.7+velScale*0.3);
+const Q=m.qLo+Math.random()*(m.qHi-m.qLo);
+const dec=m.dec*(0.5+velScale*0.7)*(0.7+Math.random()*0.6);
+const off=Math.random()*(noiseBuf.duration-0.05);
+const src=AC.createBufferSource();
+src.buffer=noiseBuf;
+src.loopStart=off; src.loopEnd=off+0.010+Math.random()*0.010;
+src.loop=true;
+src.playbackRate.value=0.8+Math.random()*0.5;
+const bp=AC.createBiquadFilter();
+bp.type=‘bandpass’; bp.frequency.value=freq; bp.Q.value=Q;
+const env=AC.createGain();
+env.gain.setValueAtTime(vol,now);
+env.gain.exponentialRampToValueAtTime(0.0001,now+dec);
+src.connect(bp); bp.connect(env); env.connect(master);
+src.start(now); src.stop(now+dec+0.003);
 }
 
-// Bell click for bells mode
-const PENTA=[523.25,587.33,659.25,783.99,880.00,
-             1046.5,1174.7,1318.5,1568.0,1760.0];
-const bellCd = new Map();
-function bellClick(noteIdx, speed) {
-  if(!AC||muted) return;
-  const now = performance.now();
-  if(now-(bellCd.get(noteIdx)||0)<140) return;
-  bellCd.set(noteIdx, now);
-  const vel = Math.min(1, speed*0.06);
-  if(vel < 0.1) return;
-  const t = AC.currentTime;
-  const freq = PENTA[noteIdx%PENTA.length];
-  const mod=AC.createOscillator(),modG=AC.createGain();
-  const car=AC.createOscillator(),carE=AC.createGain();
-  mod.frequency.value=freq*2.756; car.frequency.value=freq;
-  modG.gain.setValueAtTime(freq*vel*2.2,t);
-  modG.gain.exponentialRampToValueAtTime(0.001,t+0.15);
-  mod.connect(modG); modG.connect(car.frequency);
-  const vol=0.28*(0.4+vel*0.6), dec=0.30+vel*0.45;
-  carE.gain.setValueAtTime(vol,t);
-  carE.gain.exponentialRampToValueAtTime(0.0001,t+dec);
-  car.connect(carE); carE.connect(master);
-  mod.start(t); car.start(t); mod.stop(t+dec+.04); car.stop(t+dec+.04);
+// Accent click — bright, short, loud — the “чик” at burst start
+function fireAccent(strength) {
+if(!AC||!noiseBuf||muted||snd.fLo===0) return;
+const now=AC.currentTime;
+const m=snd;
+const freq=m.fHi*(0.85+Math.random()*0.15);
+const vol=m.vol*1.4*strength;
+const dec=m.dec*0.4;
+const off=Math.random()*(noiseBuf.duration-0.05);
+const src=AC.createBufferSource();
+src.buffer=noiseBuf;
+src.loopStart=off; src.loopEnd=off+0.008;
+src.loop=true;
+src.playbackRate.value=1.2+Math.random()*0.3;
+const bp=AC.createBiquadFilter();
+bp.type=‘bandpass’; bp.frequency.value=freq; bp.Q.value=m.qHi;
+const env=AC.createGain();
+env.gain.setValueAtTime(vol,now);
+env.gain.exponentialRampToValueAtTime(0.0001,now+dec);
+src.connect(bp); bp.connect(env); env.connect(master);
+src.start(now); src.stop(now+dec+0.002);
 }
 
-// ── SOUND QUEUE ──────────────────────────────────────
-// Collects physics collision events each frame.
-// flushQ() fires the loudest ones — max 12/frame.
-// This means sound IS the physics. No separate gesture layer.
-const SQ = [];
-const MAX_SND = 25;
-
-// Per-pair cooldown prevents same collision firing every substep
-const pairCd = new Map();
-const WALL_CD = 0;   // no cooldown on walls — every hit counts
-const BALL_CD = 18;  // minimal cooldown on ball-ball
-
-function queueHit(key, cdMs, speed, isWall, noteIdx) {
-  const now = performance.now();
-  if (now - (pairCd.get(key)||0) < cdMs) return;
-  if (speed < 0.08) return;
-  pairCd.set(key, now);
-  SQ.push({ speed, isWall, noteIdx });
+// Burst: accent + N grains clustered at front
+function scheduleBurst(strength) {
+if(!AC||muted||snd.fLo===0) return;
+const now=AC.currentTime;
+const m=snd;
+fireAccent(strength);
+const n=Math.round(18+Math.log1p(strength*8)/Math.log1p(8)*60);
+const burstDur=0.025+strength*0.040;
+for(let i=0;i<n;i++){
+const r=Math.random();
+const tOff=r*r*burstDur;
+const when=now+tOff;
+const freq=m.fLo+Math.random()*(m.fHi-m.fLo);
+const Q=m.qLo+Math.random()*(m.qHi-m.qLo);
+const vol=m.vol*strength*(0.4+Math.random()*0.6)*(1-tOff/burstDur*0.5);
+const dec=m.dec*(0.5+Math.random()*0.6);
+if(vol<0.02) continue;
+const off=Math.random()*(noiseBuf.duration-0.05);
+const src=AC.createBufferSource();
+src.buffer=noiseBuf;
+src.loopStart=off; src.loopEnd=off+0.010+Math.random()*0.010;
+src.loop=true;
+src.playbackRate.value=0.8+Math.random()*0.5;
+const bp=AC.createBiquadFilter();
+bp.type=‘bandpass’;
+bp.frequency.value=freq*(0.85+Math.random()*0.3);
+bp.Q.value=Q*(0.6+Math.random()*0.8);
+const env=AC.createGain();
+env.gain.setValueAtTime(vol,when);
+env.gain.exponentialRampToValueAtTime(0.0001,when+dec);
+src.connect(bp); bp.connect(env); env.connect(master);
+src.start(when); src.stop(when+dec+0.003);
+}
 }
 
-function flushQ() {
-  if (!SQ.length) return;
-  SQ.sort((a,b) => b.speed - a.speed);
-  const n = Math.min(MAX_SND, SQ.length);
-  for (let i=0; i<n; i++) {
-    const h = SQ[i];
-    if (modeName === 'bells') bellClick(h.noteIdx, h.speed);
-    else click(h.speed, h.isWall);
-  }
-  SQ.length = 0;
+// Micro-rattle between bursts
+let lastMicroT=0;
+function maybeMicro(strength) {
+if(!AC||muted||snd.fLo===0||strength<0.04) return;
+const now=performance.now();
+const interval=Math.max(22,90-strength*68)*(0.7+Math.random()*0.6);
+if(now-lastMicroT<interval) return;
+lastMicroT=now;
+click(3+Math.random()*4, false);
+}
+
+// Bell
+const PENTA=[523.25,587.33,659.25,783.99,880.00,1046.5,1174.7,1318.5,1568.0,1760.0];
+const bellCd=new Map();
+function bellClick(noteIdx,speed){
+if(!AC||muted) return;
+const now=performance.now();
+if(now-(bellCd.get(noteIdx)||0)<140) return;
+bellCd.set(noteIdx,now);
+const vel=Math.min(1,speed*0.06);
+if(vel<0.1) return;
+const t=AC.currentTime,freq=PENTA[noteIdx%PENTA.length];
+const mod=AC.createOscillator(),modG=AC.createGain();
+const car=AC.createOscillator(),carE=AC.createGain();
+mod.frequency.value=freq*2.756; car.frequency.value=freq;
+modG.gain.setValueAtTime(freq*vel*2.2,t);
+modG.gain.exponentialRampToValueAtTime(0.001,t+0.15);
+mod.connect(modG); modG.connect(car.frequency);
+const vol=0.28*(0.4+vel*0.6),dec=0.30+vel*0.45;
+carE.gain.setValueAtTime(vol,t); carE.gain.exponentialRampToValueAtTime(0.0001,t+dec);
+car.connect(carE); carE.connect(master);
+mod.start(t); car.start(t); mod.stop(t+dec+.04); car.stop(t+dec+.04);
 }
 
 // ── PHYSICS ───────────────────────────────────────────
-const cv  = document.getElementById('cv');
-const ctx = cv.getContext('2d');
-let W=0, H=0, dpr=1;
-let GX=0, GY=0.38;
+const cv=document.getElementById(‘cv’);
+const ctx=cv.getContext(‘2d’);
+let W=0,H=0,dpr=1;
+let GX=0,GY=0.38;
 
-const BALL_N   = 495;
-const REST     = 0.50;
-const FRIC     = 0.995;
-const SUBSTEPS = 3;
+const BALL_N=495, REST=0.50, FRIC=0.995, SUBSTEPS=3;
+let balls=[];
 
-let balls = [];
-
-const PALETTES = {
-  maracas:()=>({h:28+Math.random()*22, s:35,l:65+Math.random()*15}),
-  shaker: ()=>({h:210+Math.random()*28,s:25,l:62+Math.random()*16}),
-  rain:   ()=>({h:188+Math.random()*24,s:22,l:52+Math.random()*16}),
-  seeds:  ()=>({h:82+Math.random()*28, s:24,l:55+Math.random()*14}),
-  bells:  ()=>({h:46+Math.random()*30, s:48,l:74+Math.random()*14}),
+const PALETTES={
+maracas:()=>({h:28+Math.random()*22,s:35,l:65+Math.random()*15}),
+shaker: ()=>({h:210+Math.random()*28,s:25,l:62+Math.random()*16}),
+rain:   ()=>({h:188+Math.random()*24,s:22,l:52+Math.random()*16}),
+seeds:  ()=>({h:82+Math.random()*28,s:24,l:55+Math.random()*14}),
+bells:  ()=>({h:46+Math.random()*30,s:48,l:74+Math.random()*14}),
 };
-let palFn = PALETTES.maracas;
+let palFn=PALETTES.maracas;
 
-function mkBall(i) {
-  const r=1.2+Math.random()*1.6, p=palFn();
-  return { id:i, x:r+Math.random()*(W-r*2), y:r+Math.random()*(H*0.6),
-    vx:(Math.random()-.5)*4, vy:(Math.random()-.5)*4,
-    r, fill:`hsl(${p.h},${p.s}%,${p.l}%)`, a:0.68+Math.random()*0.32,
-    noteIdx:Math.floor(Math.random()*PENTA.length) };
+function mkBall(i){
+const r=1.2+Math.random()*1.6,p=palFn();
+return{id:i,x:r+Math.random()*(W-r*2),y:r+Math.random()*(H*0.6),
+vx:(Math.random()-.5)*4,vy:(Math.random()-.5)*4,
+r,fill:`hsl(${p.h},${p.s}%,${p.l}%)`,a:0.68+Math.random()*0.32,
+noteIdx:Math.floor(Math.random()*PENTA.length)};
 }
-function initBalls(){ balls=[]; for(let i=0;i<BALL_N;i++) balls.push(mkBall(i)); }
-function recolor(){ balls.forEach(b=>{ const p=palFn(); b.fill=`hsl(${p.h},${p.s}%,${p.l}%)`; }); }
+function initBalls(){balls=[];for(let i=0;i<BALL_N;i++)balls.push(mkBall(i));}
+function recolor(){balls.forEach(b=>{const p=palFn();b.fill=`hsl(${p.h},${p.s}%,${p.l}%)`});}
 
 function resize(){
-  dpr=Math.min(window.devicePixelRatio||1,2);
-  W=window.innerWidth; H=window.innerHeight;
-  cv.width=W*dpr; cv.height=H*dpr;
-  cv.style.width=W+'px'; cv.style.height=H+'px';
-  ctx.setTransform(dpr,0,0,dpr,0,0);
-  initBalls();
+dpr=Math.min(window.devicePixelRatio||1,2);
+W=window.innerWidth;H=window.innerHeight;
+cv.width=W*dpr;cv.height=H*dpr;
+cv.style.width=W+‘px’;cv.style.height=H+‘px’;
+ctx.setTransform(dpr,0,0,dpr,0,0);
+initBalls();
 }
-window.addEventListener('resize',()=>{ ctx.setTransform(1,0,0,1,0,0); resize(); });
+window.addEventListener(‘resize’,()=>{ctx.setTransform(1,0,0,1,0,0);resize();});
 
-function physicsStep() {
-  for(let s=0;s<SUBSTEPS;s++){
-    for(const b of balls){
-      b.vx=(b.vx+GX)*FRIC; b.vy=(b.vy+GY)*FRIC;
-      b.x+=b.vx; b.y+=b.vy;
-    }
-    for(const b of balls){
-      if(b.x-b.r<0){
-        b.x=b.r; const sp=Math.abs(b.vx); b.vx=sp*REST;
-        queueHit(b.id*4+0, WALL_CD, sp, true, b.noteIdx);
-      } else if(b.x+b.r>W){
-        b.x=W-b.r; const sp=Math.abs(b.vx); b.vx=-sp*REST;
-        queueHit(b.id*4+1, WALL_CD, sp, true, b.noteIdx);
-      }
-      if(b.y-b.r<0){
-        b.y=b.r; const sp=Math.abs(b.vy); b.vy=sp*REST;
-        queueHit(b.id*4+2, WALL_CD, sp, true, b.noteIdx);
-      } else if(b.y+b.r>H){
-        b.y=H-b.r; const sp=Math.abs(b.vy); b.vy=-sp*REST;
-        queueHit(b.id*4+3, WALL_CD, sp, true, b.noteIdx);
-      }
-    }
-    for(let i=0;i<balls.length;i++){
-      for(let j=i+1;j<balls.length;j++){
-        const a=balls[i],b=balls[j];
-        const dx=b.x-a.x,dy=b.y-a.y,d2=dx*dx+dy*dy,md=a.r+b.r;
-        if(d2>=md*md||d2<.001) continue;
-        const dist=Math.sqrt(d2),nx=dx/dist,ny=dy/dist,ov=(md-dist)*.5;
-        a.x-=nx*ov;a.y-=ny*ov;b.x+=nx*ov;b.y+=ny*ov;
-        const dvx=b.vx-a.vx,dvy=b.vy-a.vy,dot=dvx*nx+dvy*ny;
-        if(dot<0){
-          const imp=dot*(1+REST)*.5;
-          a.vx+=imp*nx;a.vy+=imp*ny;b.vx-=imp*nx;b.vy-=imp*ny;
-          queueHit(i*1000+j, BALL_CD, Math.abs(dot), false, a.noteIdx);
-        }
-      }
-    }
-  }
+function physicsStep(){
+for(let s=0;s<SUBSTEPS;s++){
+for(const b of balls){b.vx=(b.vx+GX)*FRIC;b.vy=(b.vy+GY)*FRIC;b.x+=b.vx;b.y+=b.vy;}
+for(const b of balls){
+if(b.x-b.r<0){b.x=b.r;b.vx=Math.abs(b.vx)*REST;}
+else if(b.x+b.r>W){b.x=W-b.r;b.vx=-Math.abs(b.vx)*REST;}
+if(b.y-b.r<0){b.y=b.r;b.vy=Math.abs(b.vy)*REST;}
+else if(b.y+b.r>H){b.y=H-b.r;b.vy=-Math.abs(b.vy)*REST;}
+}
+for(let i=0;i<balls.length;i++){
+for(let j=i+1;j<balls.length;j++){
+const a=balls[i],b=balls[j];
+const dx=b.x-a.x,dy=b.y-a.y,d2=dx*dx+dy*dy,md=a.r+b.r;
+if(d2>=md*md||d2<.001) continue;
+const dist=Math.sqrt(d2),nx=dx/dist,ny=dy/dist,ov=(md-dist)*.5;
+a.x-=nx*ov;a.y-=ny*ov;b.x+=nx*ov;b.y+=ny*ov;
+const dvx=b.vx-a.vx,dvy=b.vy-a.vy,dot=dvx*nx+dvy*ny;
+if(dot<0){const imp=dot*(1+REST)*.5;a.vx+=imp*nx;a.vy+=imp*ny;b.vx-=imp*nx;b.vy-=imp*ny;}
+}
+}
+}
 }
 
 function draw(){
-  ctx.fillStyle='#07070c'; ctx.fillRect(0,0,W,H);
-  for(const b of balls){
-    ctx.globalAlpha=b.a; ctx.fillStyle=b.fill;
-    ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,Math.PI*2); ctx.fill();
-  }
-  ctx.globalAlpha=1;
+ctx.fillStyle=’#07070c’;ctx.fillRect(0,0,W,H);
+for(const b of balls){
+ctx.globalAlpha=b.a;ctx.fillStyle=b.fill;
+ctx.beginPath();ctx.arc(b.x,b.y,b.r,0,Math.PI*2);ctx.fill();
+}
+ctx.globalAlpha=1;
 }
 
-function loop(){ requestAnimationFrame(loop); physicsStep(); flushQ(); draw(); }
+function loop(){requestAnimationFrame(loop);physicsStep();draw();}
 
 // ── MOTION ────────────────────────────────────────────
-// Two effects on physics balls:
-// 1. Gravity from tilt (slow, gentle) → GX/GY
-// 2. Inertial impulse on sharp jerk → direct velocity kick
-//    Forward (от себя): full strength impulse
-//    Return (обратно): 40% strength — audibly quieter
-let pax=0, pay=0, paz=0;
+let pax=0,pay=0,paz=0;
+let jerkSmooth=0,jerkPrev=0;
+let lastBurstT=0;
+let microStrength=0;
+
+const BURST_THRESHOLD=0.08;
+const BURST_COOLDOWN=48;
+const BURST_SILENCE=55;
 
 function onMotion(e){
-  const a=e.accelerationIncludingGravity||{};
-  const ax=a.x||0,ay=a.y||0,az=a.z||0;
+const a=e.accelerationIncludingGravity||{};
+const ax=a.x||0,ay=a.y||0,az=a.z||0;
+const dx=ax-pax,dy=ay-pay,dz=az-paz;
+pax=ax;pay=ay;paz=az;
+const jRaw=Math.sqrt(dx*dx+dy*dy+dz*dz);
+const alpha=jRaw>jerkSmooth?0.45:0.08;
+jerkPrev=jerkSmooth;
+jerkSmooth=jerkSmooth*(1-alpha)+jRaw*alpha;
 
-  // Jerk
-  const jx=ax-pax,jy=ay-pay,jz=az-paz;
-  pax=ax; pay=ay; paz=az;
-  const jMag=Math.sqrt(jx*jx+jy*jy+jz*jz);
+GX=Math.max(-.8,Math.min(.8, ax*0.056));
+GY=Math.max(-.8,Math.min(.8,-ay*0.056));
 
-  // Passive gravity
-  GX=Math.max(-.8,Math.min(.8, ax*0.056));
-  GY=Math.max(-.8,Math.min(.8,-ay*0.056));
+// Inertial impulse — both directions
+if(jRaw>1.5){
+const scale=Math.min(3.2,jRaw*0.20);
+const nx=dx/jRaw,ny=dy/jRaw;
+for(const b of balls){
+b.vx+=(-nx)*scale*(0.8+Math.random()*0.4);
+b.vy+=( ny)*scale*(0.8+Math.random()*0.4);
+}
+}
 
-  if(jMag < 1.2) return;
+const now=performance.now();
+const strength=Math.min(1,jerkSmooth*0.09);
 
-  // Determine direction: forward = phone moving away (ay increases on forward push)
-  // Forward stroke gets full impulse, return gets 40%
-  const isForward = jy > 0; // simplified: forward = positive Y jerk
-  const dirScale  = isForward ? 1.0 : 0.40;
+// Burst: smoothed rising edge OR raw spike (catches return stroke)
+const smoothedPeak=jerkSmooth>BURST_THRESHOLD&&jerkSmooth>=jerkPrev;
+const rawSpike=jRaw>2.8;
+const gap=now-lastBurstT;
 
-  const scale = Math.min(3.5, jMag*0.22) * dirScale;
-  const nx=jx/jMag, ny=jy/jMag;
+if((smoothedPeak||rawSpike)&&gap>BURST_COOLDOWN){
+lastBurstT=now;
+const s=rawSpike&&!smoothedPeak?Math.min(1,jRaw*0.06):strength;
+if(modeName===‘bells’) bellClick(Math.floor(Math.random()*PENTA.length),jRaw);
+else scheduleBurst(s);
+}
 
-  for(const b of balls){
-    b.vx += (-nx) * scale * (0.8+Math.random()*0.4);
-    b.vy += ( ny) * scale * (0.8+Math.random()*0.4);
-  }
+// Micro-rattle between bursts
+microStrength=microStrength*0.85+strength*0.15;
+const inSilence=(now-lastBurstT)<BURST_SILENCE;
+if(!inSilence&&microStrength>0.04&&modeName!==‘bells’) maybeMicro(microStrength);
 }
 
 // ── UI ────────────────────────────────────────────────
-document.getElementById('splash').addEventListener('click',async()=>{
-  initAudio();
-  try{
-    if(typeof DeviceMotionEvent!=='undefined'&&
-       typeof DeviceMotionEvent.requestPermission==='function'){
-      const r=await DeviceMotionEvent.requestPermission();
-      if(r!=='granted') throw new Error('denied');
-    }
-    window.addEventListener('devicemotion',onMotion,{passive:true});
-  }catch(e){console.warn('Motion:',e.message);}
-  document.getElementById('splash').classList.add('gone');
-  document.getElementById('strip').classList.add('show');
+document.getElementById(‘splash’).addEventListener(‘click’,async()=>{
+initAudio();
+try{
+if(typeof DeviceMotionEvent!==‘undefined’&&
+typeof DeviceMotionEvent.requestPermission===‘function’){
+const r=await DeviceMotionEvent.requestPermission();
+if(r!==‘granted’) throw new Error(‘denied’);
+}
+window.addEventListener(‘devicemotion’,onMotion,{passive:true});
+}catch(e){console.warn(‘Motion:’,e.message);}
+document.getElementById(‘splash’).classList.add(‘gone’);
+document.getElementById(‘strip’).classList.add(‘show’);
 });
 
-document.querySelectorAll('.chip').forEach(btn=>{
-  btn.addEventListener('click',()=>{
-    document.querySelectorAll('.chip').forEach(c=>c.classList.remove('active'));
-    btn.classList.add('active');
-    const m=btn.dataset.mode;
-    modeName=m; snd=MODES_SND[m]||MODES_SND.maracas;
-    palFn=PALETTES[m]||PALETTES.maracas;
-    document.getElementById('mode-label').textContent=btn.textContent;
-    recolor();
-  });
+document.querySelectorAll(’.chip’).forEach(btn=>{
+btn.addEventListener(‘click’,()=>{
+document.querySelectorAll(’.chip’).forEach(c=>c.classList.remove(‘active’));
+btn.classList.add(‘active’);
+const m=btn.dataset.mode;
+modeName=m;snd=MODES_SND[m]||MODES_SND.maracas;
+palFn=PALETTES[m]||PALETTES.maracas;
+document.getElementById(‘mode-label’).textContent=btn.textContent;
+recolor();
+});
 });
 
-document.getElementById('ic-mute').addEventListener('click',()=>{
-  muted=!muted;
-  if(master) master.gain.value=muted?0:2.8;
-  document.getElementById('ic-mute').textContent=muted?'✕':'♪';
-  document.getElementById('ic-mute').classList.toggle('on',!muted);
+document.getElementById(‘ic-mute’).addEventListener(‘click’,()=>{
+muted=!muted;
+if(master) master.gain.value=muted?0:2.8;
+document.getElementById(‘ic-mute’).textContent=muted?‘✕’:‘♪’;
+document.getElementById(‘ic-mute’).classList.toggle(‘on’,!muted);
 });
 
-document.getElementById('ic-reset').addEventListener('click',()=>initBalls());
+document.getElementById(‘ic-reset’).addEventListener(‘click’,()=>initBalls());
 
 resize();
 loop();

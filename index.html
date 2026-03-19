@@ -442,8 +442,30 @@ loop();
 
 // Hard tap on screen → "who's there?"
 // touchstart gives fastest response; force API on iOS if available
-cv.addEventListener('touchstart', function(e) {
-  onTap();
+// Knock detection: very short touch (< 80ms) = knuckle knock
+// Two knocks within 600ms → "who's there?"
+var knockStart = 0;
+var lastKnock  = 0;
+var knockCount = 0;
+
+document.addEventListener('touchstart', function(e) {
+  if (e.target.tagName==='BUTTON'||e.target.classList.contains('chip')) return;
+  knockStart = performance.now();
+}, { passive: true });
+
+document.addEventListener('touchend', function(e) {
+  if (e.target.tagName==='BUTTON'||e.target.classList.contains('chip')) return;
+  var dur = performance.now() - knockStart;
+  // Knock = contact < 80ms (finger tap is 100-200ms, knuckle is 20-60ms)
+  if (dur < 80) {
+    var now = performance.now();
+    var gap = now - lastKnock;
+    lastKnock = now;
+    // Two knocks within 600ms
+    if (gap < 600 && gap > 50) {
+      sayWhoseThere();
+    }
+  }
 }, { passive: true });
 </script>
 

@@ -174,7 +174,7 @@ function flushHits() {
   if(!hitQ.length) return;
   hitQ.sort((a,b)=>b.vel-a.vel);
   // Play max 2 — enough to feel present, not enough to overload
-  const n=Math.min(3,hitQ.length);
+  const n=Math.min(4,hitQ.length);
   for(let i=0;i<n;i++){
     const h=hitQ[i];
     if(modeName==='bells') bellNote(h.ballId,h.vel);
@@ -191,7 +191,7 @@ const ctx=cv.getContext('2d');
 let W=0,H=0,dpr=1;
 let GX=0,GY=0.38;
 
-const BALL_N  = 55;   // more but small
+const BALL_N  = 165;  // ×3
 const REST    = 0.52;
 const FRIC    = 0.996; // low friction = lively
 const SUBSTEPS= 3;

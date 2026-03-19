@@ -319,11 +319,40 @@ function loop() {
 }
 
 // ── MOTION ────────────────────────────────────────────
+// Real maraca physics: when hand reverses direction, seeds
+// get an inertial kick in the OPPOSITE direction.
+// We detect this by tracking how much GX/GY changed this frame.
+// That delta = inertial force = gets added directly to ball velocities.
+let prevGX = 0, prevGY = 0;
+
 function onMotion(e) {
-  const a=e.accelerationIncludingGravity||{};
-  const ax=a.x||0, ay=a.y||0;
-  GX=Math.max(-.9,Math.min(.9,  ax*0.062));
-  GY=Math.max(-.9,Math.min(.9, -ay*0.062));
+  const a = e.accelerationIncludingGravity || {};
+  const ax = a.x||0, ay = a.y||0;
+
+  const newGX = Math.max(-.9, Math.min(.9,  ax * 0.062));
+  const newGY = Math.max(-.9, Math.min(.9, -ay * 0.062));
+
+  // Delta gravity = inertial kick when device changes direction
+  const dGX = newGX - prevGX;
+  const dGY = newGY - prevGY;
+  prevGX = newGX;
+  prevGY = newGY;
+
+  GX = newGX;
+  GY = newGY;
+
+  // If gravity changed significantly this frame (direction reversal),
+  // push all balls with an inertial impulse.
+  // Scale: 8x amplification so fast wrist flick = real kick.
+  const kickX = dGX * 8;
+  const kickY = dGY * 8;
+  const kickMag = Math.sqrt(kickX*kickX + kickY*kickY);
+  if (kickMag > 0.05) {
+    for (const b of balls) {
+      b.vx += kickX;
+      b.vy += kickY;
+    }
+  }
 }
 
 // ── UI ────────────────────────────────────────────────

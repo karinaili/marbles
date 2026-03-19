@@ -217,7 +217,7 @@ function scheduleBurst(strength) {
   fireAccent(strength);
 
   // grain count: log-saturated 4..18 — never a flood
-  const n = Math.round(6 + Math.log1p(strength * 8) / Math.log1p(8) * 20);
+  const n = Math.round(18 + Math.log1p(strength * 8) / Math.log1p(8) * 60);
 
   // burst duration: 25-65ms — short, compact
   const burstDur = 0.025 + strength * 0.040;
@@ -271,7 +271,7 @@ const ctx = cv.getContext('2d');
 let W=0, H=0, dpr=1;
 let GX=0, GY=0.38;
 
-const BALL_N   = 165;
+const BALL_N   = 495;
 const REST     = 0.50;
 const FRIC     = 0.995;
 const SUBSTEPS = 3;
@@ -288,7 +288,7 @@ const PALETTES = {
 let palFn = PALETTES.maracas;
 
 function mkBall(i) {
-  const r=2+Math.random()*2.5, p=palFn();
+  const r=1.2+Math.random()*1.6, p=palFn();
   return { id:i, x:r+Math.random()*(W-r*2), y:r+Math.random()*(H*0.6),
     vx:(Math.random()-.5)*4, vy:(Math.random()-.5)*4,
     r, fill:`hsl(${p.h},${p.s}%,${p.l}%)`, a:0.68+Math.random()*0.32,

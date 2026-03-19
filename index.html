@@ -9,45 +9,33 @@
 <title>marbles</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;1,300&family=DM+Mono:wght@300&display=swap');
-
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;touch-action:manipulation;}
 html,body{width:100%;height:100%;overflow:hidden;background:#07070c;}
 canvas{position:fixed;inset:0;width:100%;height:100%;display:block;}
-
-#splash{
-position:fixed;inset:0;z-index:60;
-display:flex;flex-direction:column;align-items:center;justify-content:center;
-gap:18px;padding:52px 48px;background:#07070c;
-transition:opacity .7s,visibility .7s;cursor:pointer;
-}
+#splash{position:fixed;inset:0;z-index:60;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:52px 48px;background:#07070c;transition:opacity .7s,visibility .7s;cursor:pointer;}
 #splash.gone{opacity:0;visibility:hidden;pointer-events:none;}
-.logo{font-family:‘Cormorant Garamond’,serif;font-style:italic;font-weight:300;font-size:60px;letter-spacing:.05em;color:rgba(255,255,255,.88);text-shadow:0 0 60px rgba(255,255,255,.08);}
-.sub{font-family:‘DM Mono’,monospace;font-weight:300;font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:rgba(255,255,255,.2);text-align:center;line-height:2.3;}
-.tap-hint{margin-top:16px;width:72px;height:72px;border-radius:50%;border:1px solid rgba(255,255,255,.18);display:flex;align-items:center;justify-content:center;font-family:‘DM Mono’,monospace;font-weight:300;font-size:8.5px;letter-spacing:.18em;text-transform:uppercase;color:rgba(255,255,255,.3);animation:pulse 2.2s ease-in-out infinite;}
+.logo{font-family:'Cormorant Garamond',serif;font-style:italic;font-weight:300;font-size:60px;letter-spacing:.05em;color:rgba(255,255,255,.88);text-shadow:0 0 60px rgba(255,255,255,.08);}
+.sub{font-family:'DM Mono',monospace;font-weight:300;font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:rgba(255,255,255,.2);text-align:center;line-height:2.3;}
+.tap-hint{margin-top:16px;width:72px;height:72px;border-radius:50%;border:1px solid rgba(255,255,255,.18);display:flex;align-items:center;justify-content:center;font-family:'DM Mono',monospace;font-weight:300;font-size:8.5px;letter-spacing:.18em;text-transform:uppercase;color:rgba(255,255,255,.3);animation:pulse 2.2s ease-in-out infinite;}
 @keyframes pulse{0%,100%{transform:scale(1);border-color:rgba(255,255,255,.18);}50%{transform:scale(1.06);border-color:rgba(255,255,255,.36);}}
-
 #strip{position:fixed;bottom:0;left:0;right:0;padding:8px 16px calc(env(safe-area-inset-bottom,0px) + 14px);background:linear-gradient(transparent,rgba(7,7,12,.94) 36%);display:flex;flex-direction:column;gap:7px;z-index:10;opacity:0;transition:opacity .6s;}
 #strip.show{opacity:1;}
 .chips{display:flex;gap:5px;justify-content:center;flex-wrap:wrap;}
-.chip{padding:4px 12px;border-radius:20px;border:1px solid rgba(255,255,255,.1);background:transparent;color:rgba(255,255,255,.28);font-family:‘DM Mono’,monospace;font-weight:300;font-size:8.5px;letter-spacing:.12em;cursor:pointer;transition:all .15s;white-space:nowrap;}
+.chip{padding:4px 12px;border-radius:20px;border:1px solid rgba(255,255,255,.1);background:transparent;color:rgba(255,255,255,.28);font-family:'DM Mono',monospace;font-weight:300;font-size:8.5px;letter-spacing:.12em;cursor:pointer;transition:all .15s;white-space:nowrap;}
 .chip.active{border-color:rgba(255,255,255,.5);color:rgba(255,255,255,.78);background:rgba(255,255,255,.06);}
 .bottom-row{display:flex;align-items:center;justify-content:center;gap:14px;}
 .ic{width:30px;height:30px;border-radius:50%;border:1px solid rgba(255,255,255,.12);background:transparent;color:rgba(255,255,255,.3);font-size:11px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .15s;}
 .ic.on{border-color:rgba(255,255,255,.4);color:rgba(255,255,255,.7);}
-.mode-name{font-family:‘Cormorant Garamond’,serif;font-style:italic;font-weight:300;font-size:17px;letter-spacing:.1em;color:rgba(255,255,255,.22);min-width:70px;text-align:center;}
+.mode-name{font-family:'Cormorant Garamond',serif;font-style:italic;font-weight:300;font-size:17px;letter-spacing:.1em;color:rgba(255,255,255,.22);min-width:70px;text-align:center;}
 </style>
-
 </head>
 <body>
-
 <div id="splash">
   <div class="logo">marbles</div>
   <div class="sub">shake · tilt · roll<br>to play</div>
   <div class="tap-hint">tap</div>
 </div>
-
 <canvas id="cv"></canvas>
-
 <div id="strip">
   <div class="chips">
     <button class="chip active" data-mode="maracas">maracas</button>
@@ -66,132 +54,123 @@ transition:opacity .7s,visibility .7s;cursor:pointer;
 <script>
 'use strict';
 
-// ═══════════════════════════════════════════════════════
-//  AUDIO — continuous texture, no individual hits
-// ═══════════════════════════════════════════════════════
+// ── AUDIO ─────────────────────────────────────────────
 let AC = null, master = null, muted = false;
-let noiseNode = null, filterA = null, filterB = null;
-let envGain = null, modOsc = null, modGain = null;
+let noiseBuf = null;
 
-// Physics energy → audio (smoothed)
-let smoothVol  = 0;
-let smoothFreq = 3000;
-
-// Mode audio parameters
-const AUDIO_MODES = {
-  maracas: { vol:0.28, fBase:3200, fRange:1600, q:1.1, tHz:9,  tDepth:0.04 },
-  shaker:  { vol:0.22, fBase:5000, fRange:1800, q:0.8, tHz:13, tDepth:0.03 },
-  rain:    { vol:0.32, fBase:800,  fRange:900,  q:0.5, tHz:3,  tDepth:0.09 },
-  seeds:   { vol:0.26, fBase:1800, fRange:1200, q:1.8, tHz:10, tDepth:0.07 },
-  shells:  { vol:0.20, fBase:4200, fRange:2000, q:2.8, tHz:12, tDepth:0.03 },
+// Mode sound params: vol (0-1), freq (Hz), Q, dur (seconds)
+// All tuned to be tiny, dry, immediate — like seeds in a shaker
+const MODES_SND = {
+  maracas: { vol:0.22, freq:4000, q:1.6, dur:0.009 },
+  shaker:  { vol:0.18, freq:6800, q:1.1, dur:0.006 },
+  rain:    { vol:0.19, freq:1200, q:0.55,dur:0.022 },
+  seeds:   { vol:0.21, freq:2600, q:2.8, dur:0.011 },
+  shells:  { vol:0.16, freq:7200, q:3.8, dur:0.007 },
 };
-let aMode = AUDIO_MODES.maracas;
+let snd = MODES_SND.maracas;
 
 function initAudio() {
   if (AC) return;
   AC = new (window.AudioContext || window.webkitAudioContext)();
 
-  // Soft compressor — glues everything together
+  // Gentle compressor — just glue, not crush
   const comp = AC.createDynamicsCompressor();
-  comp.threshold.value = -22; comp.knee.value = 14;
-  comp.ratio.value = 4; comp.attack.value = 0.008; comp.release.value = 0.25;
+  comp.threshold.value = -18; comp.knee.value = 14;
+  comp.ratio.value = 3.5;    comp.attack.value = 0.005;
+  comp.release.value = 0.2;
 
-  // Safety limiter
-  const lim = AC.createDynamicsCompressor();
-  lim.threshold.value = -2; lim.knee.value = 0;
-  lim.ratio.value = 20; lim.attack.value = 0.001; lim.release.value = 0.06;
+  master = AC.createGain();
+  master.gain.value = 0.7;
+  master.connect(comp);
+  comp.connect(AC.destination);
 
-  master = AC.createGain(); master.gain.value = 0.8;
-  master.connect(comp); comp.connect(lim); lim.connect(AC.destination);
-
-  // iOS unlock
-  const sb = AC.createBuffer(1,1,AC.sampleRate);
-  const ss = AC.createBufferSource(); ss.buffer=sb; ss.connect(AC.destination); ss.start(0);
+  // iOS speaker unlock — silent buffer on user gesture
+  const sb = AC.createBuffer(1, 1, AC.sampleRate);
+  const ss = AC.createBufferSource();
+  ss.buffer = sb; ss.connect(AC.destination); ss.start(0);
   if (AC.state === 'suspended') AC.resume();
 
-  // Build pink-ish noise buffer
-  const sr = AC.sampleRate, blen = sr * 3;
-  const nbuf = AC.createBuffer(1, blen, sr);
-  const nd = nbuf.getChannelData(0);
-  let b0=0,b1=0,b2=0,b3=0,b4=0;
-  for (let i=0;i<blen;i++) {
-    const w = Math.random()*2-1;
-    b0=.99886*b0+w*.0555179; b1=.99332*b1+w*.0750759;
-    b2=.96900*b2+w*.1538520; b3=.86650*b3+w*.3104856;
-    b4=.55000*b4+w*.5329522;
-    nd[i]=(b0+b1+b2+b3+b4)*0.14;
+  // Build short pink-ish noise buffer (60ms)
+  const sr = AC.sampleRate;
+  const len = Math.floor(sr * 0.06);
+  noiseBuf = AC.createBuffer(1, len, sr);
+  const d = noiseBuf.getChannelData(0);
+  let b0=0, b1=0, b2=0;
+  for (let i = 0; i < len; i++) {
+    const w = Math.random() * 2 - 1;
+    b0 = 0.99886*b0 + w*0.0555;
+    b1 = 0.96900*b1 + w*0.1538;
+    b2 = 0.57000*b2 + w*0.5330;
+    d[i] = (b0 + b1 + b2 + w*0.18) * 0.14;
   }
-
-  // Noise → two parallel bandpass filters → merge → envGain → master
-  noiseNode = AC.createBufferSource();
-  noiseNode.buffer = nbuf; noiseNode.loop = true;
-
-  filterA = AC.createBiquadFilter();
-  filterA.type='bandpass'; filterA.frequency.value=3000; filterA.Q.value=1.3;
-
-  filterB = AC.createBiquadFilter();
-  filterB.type='bandpass'; filterB.frequency.value=5200; filterB.Q.value=0.85;
-
-  const merge = AC.createGain(); merge.gain.value = 0.52;
-
-  envGain = AC.createGain(); envGain.gain.value = 0;
-
-  // Tremolo LFO — gives organic grain texture
-  modOsc  = AC.createOscillator(); modOsc.type='sine'; modOsc.frequency.value=8;
-  modGain = AC.createGain(); modGain.gain.value = 0;
-
-  noiseNode.connect(filterA); noiseNode.connect(filterB);
-  filterA.connect(merge); filterB.connect(merge);
-  merge.connect(envGain); envGain.connect(master);
-  modOsc.connect(modGain); modGain.connect(envGain.gain);
-
-  noiseNode.start(); modOsc.start();
 }
 
-// Called every frame from the render loop with total kinetic energy of all balls
-function updateAudio(energy) {
-  if (!AC || !envGain || muted) return;
+// Tiny click: noise snippet → bandpass → instant-on exponential decay
+function click(vel) {
+  if (!AC || !noiseBuf || muted) return;
   const now = AC.currentTime;
-  const T = 0.003; // 3ms — near-instant response
 
-  // Asymmetric smoothing: fast attack, slow release
-  const aAtk = 0.92, aRel = 0.025;
-  smoothVol  += (energy - smoothVol)  * (energy > smoothVol ? aAtk : aRel);
-  smoothFreq += (aMode.fBase + energy * aMode.fRange - smoothFreq) * 0.07;
+  const src = AC.createBufferSource();
+  src.buffer = noiseBuf;
+  // Random offset in noise buffer so each click sounds unique
+  const off = Math.random() * 0.04;
+  src.loopStart = off;
+  src.loopEnd   = off + 0.008 + Math.random() * 0.004;
+  src.loop = true;
+  src.playbackRate.value = 0.82 + Math.random() * 0.38;
 
-  // Set audio params — setTargetAtTime gives continuous smooth ramping
-  envGain.gain.setTargetAtTime(smoothVol * aMode.vol, now, T);
-  filterA.frequency.setTargetAtTime(smoothFreq, now, T);
-  filterB.frequency.setTargetAtTime(smoothFreq * 1.5, now, T);
-  filterA.Q.setTargetAtTime(aMode.q * (0.55 + energy * 0.9), now, T);
-  filterB.Q.setTargetAtTime(aMode.q * 0.65, now, T);
+  const bp = AC.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = snd.freq * (0.78 + vel * 0.44) * (0.94 + Math.random() * 0.12);
+  bp.Q.value = snd.q * (0.7 + Math.random() * 0.5);
 
-  // Tremolo depth & speed scale with energy
-  modGain.gain.setTargetAtTime(smoothVol * aMode.tDepth, now, T);
-  modOsc.frequency.setTargetAtTime(aMode.tHz + energy * 5, now, T);
+  const env = AC.createGain();
+  const vol = snd.vol * (0.25 + vel * 0.75);
+  const dur = snd.dur * (0.6 + vel * 0.7);
+
+  // No ramp-up — instant start, pure exponential decay
+  env.gain.setValueAtTime(vol, now);
+  env.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+  src.connect(bp); bp.connect(env); env.connect(master);
+  src.start(now);
+  src.stop(now + dur + 0.001);
 }
 
-// ═══════════════════════════════════════════════════════
-//  PHYSICS
-// ═══════════════════════════════════════════════════════
-const cv = document.getElementById('cv');
-const ctx = cv.getContext('2d');
-let W=0, H=0, dpr=1;
-let GX=0, GY=0.35;
+// Per-ball wall cooldown
+const wallCd = new Map();
+const WALL_CD_MS = 52;
 
-const BALL_N     = 60;
-const RESTITUTION = 0.50;
-const FRICTION    = 0.992;
-const SUBSTEPS    = 3;
+function wallHit(bid, side, speed) {
+  if (muted || !AC) return;
+  const key = bid * 4 + side;
+  const now = performance.now();
+  if (now - (wallCd.get(key) || 0) < WALL_CD_MS) return;
+  wallCd.set(key, now);
+  const vel = Math.min(1, speed * 0.09);
+  if (vel < 0.07) return;
+  click(vel);
+}
+
+// ── PHYSICS ───────────────────────────────────────────
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+let W = 0, H = 0, dpr = 1;
+let GX = 0, GY = 0.35;
+
+const BALL_N    = 60;
+const REST      = 0.50;
+const FRIC      = 0.992;
+const SUBSTEPS  = 3;
 
 let balls = [];
 
 const PALETTES = {
-  maracas:() => ({h:28 +Math.random()*22, s:35, l:65+Math.random()*16}),
-  shaker: () => ({h:210+Math.random()*28, s:25, l:60+Math.random()*18}),
-  rain:   () => ({h:188+Math.random()*24, s:20, l:50+Math.random()*18}),
-  seeds:  () => ({h:82 +Math.random()*28, s:24, l:53+Math.random()*16}),
-  shells: () => ({h:12 +Math.random()*18, s:32, l:68+Math.random()*14}),
+  maracas:()=>({h:28 +Math.random()*22,s:35,l:65+Math.random()*16}),
+  shaker: ()=>({h:210+Math.random()*28,s:25,l:60+Math.random()*18}),
+  rain:   ()=>({h:188+Math.random()*24,s:20,l:50+Math.random()*18}),
+  seeds:  ()=>({h:82 +Math.random()*28,s:24,l:53+Math.random()*16}),
+  shells: ()=>({h:12 +Math.random()*18,s:32,l:68+Math.random()*14}),
 };
 let palFn = PALETTES.maracas;
 
@@ -199,147 +178,155 @@ function mkBall(i) {
   const r = 3.5 + Math.random() * 4;
   const p = palFn();
   return {
-    id:i, x:r+Math.random()*(W-r*2), y:r+Math.random()*(H*0.6),
-    vx:(Math.random()-.5)*3, vy:(Math.random()-.5)*3,
-    r, fill:`hsl(${p.h},${p.s}%,${p.l}%)`,
-    a:0.72+Math.random()*0.28,
+    id:i,
+    x: r + Math.random()*(W - r*2),
+    y: r + Math.random()*(H * 0.6),
+    vx: (Math.random()-.5)*3,
+    vy: (Math.random()-.5)*3,
+    r,
+    fill: `hsl(${p.h},${p.s}%,${p.l}%)`,
+    a: 0.72 + Math.random()*0.28,
   };
 }
 
 function initBalls() {
-  balls=[];
-  for(let i=0;i<BALL_N;i++) balls.push(mkBall(i));
+  balls = [];
+  for (let i = 0; i < BALL_N; i++) balls.push(mkBall(i));
 }
 
 function recolor() {
-  balls.forEach(b => { const p=palFn(); b.fill=`hsl(${p.h},${p.s}%,${p.l}%)`; });
+  balls.forEach(b => { const p = palFn(); b.fill = `hsl(${p.h},${p.s}%,${p.l}%)`; });
 }
 
 function resize() {
-  dpr=Math.min(window.devicePixelRatio||1,2);
-  W=window.innerWidth; H=window.innerHeight;
-  cv.width=W*dpr; cv.height=H*dpr;
-  cv.style.width=W+'px'; cv.style.height=H+'px';
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = W*dpr; cv.height = H*dpr;
+  cv.style.width = W+'px'; cv.style.height = H+'px';
   ctx.setTransform(dpr,0,0,dpr,0,0);
   initBalls();
 }
-window.addEventListener('resize',()=>{ctx.setTransform(1,0,0,1,0,0);resize();});
-
-// Track total kinetic energy for audio
-let totalKE = 0;
+window.addEventListener('resize', ()=>{ ctx.setTransform(1,0,0,1,0,0); resize(); });
 
 function physicsStep() {
-  let ke = 0;
-
-  for (let s=0; s<SUBSTEPS; s++) {
+  for (let s = 0; s < SUBSTEPS; s++) {
+    // Integrate
     for (const b of balls) {
-      b.vx = (b.vx + GX) * FRICTION;
-      b.vy = (b.vy + GY) * FRICTION;
-      b.x += b.vx; b.y += b.vy;
-      ke += b.vx*b.vx + b.vy*b.vy;
+      b.vx = (b.vx + GX) * FRIC;
+      b.vy = (b.vy + GY) * FRIC;
+      b.x += b.vx;
+      b.y += b.vy;
     }
 
+    // Wall collisions — each produces a sound
     for (const b of balls) {
-      if (b.x-b.r<0)   { b.x=b.r;   b.vx= Math.abs(b.vx)*RESTITUTION; }
-      else if(b.x+b.r>W){ b.x=W-b.r; b.vx=-Math.abs(b.vx)*RESTITUTION; }
-      if (b.y-b.r<0)   { b.y=b.r;   b.vy= Math.abs(b.vy)*RESTITUTION; }
-      else if(b.y+b.r>H){ b.y=H-b.r; b.vy=-Math.abs(b.vy)*RESTITUTION; }
+      if (b.x - b.r < 0) {
+        const sp = Math.abs(b.vx);
+        b.x = b.r; b.vx = sp * REST;
+        wallHit(b.id, 0, sp);
+      } else if (b.x + b.r > W) {
+        const sp = Math.abs(b.vx);
+        b.x = W - b.r; b.vx = -sp * REST;
+        wallHit(b.id, 1, sp);
+      }
+      if (b.y - b.r < 0) {
+        const sp = Math.abs(b.vy);
+        b.y = b.r; b.vy = sp * REST;
+        wallHit(b.id, 2, sp);
+      } else if (b.y + b.r > H) {
+        const sp = Math.abs(b.vy);
+        b.y = H - b.r; b.vy = -sp * REST;
+        wallHit(b.id, 3, sp);
+      }
     }
 
-    for (let i=0;i<balls.length;i++) {
-      for (let j=i+1;j<balls.length;j++) {
-        const a=balls[i], b=balls[j];
-        const dx=b.x-a.x, dy=b.y-a.y;
-        const d2=dx*dx+dy*dy, minD=a.r+b.r;
-        if(d2>=minD*minD||d2<.001) continue;
-        const dist=Math.sqrt(d2), nx=dx/dist, ny=dy/dist;
-        const ov=(minD-dist)*.5;
-        a.x-=nx*ov; a.y-=ny*ov; b.x+=nx*ov; b.y+=ny*ov;
+    // Ball-ball collisions (silent — wall hits carry the music)
+    for (let i = 0; i < balls.length; i++) {
+      for (let j = i+1; j < balls.length; j++) {
+        const a = balls[i], b = balls[j];
+        const dx = b.x-a.x, dy = b.y-a.y;
+        const d2 = dx*dx+dy*dy, md = a.r+b.r;
+        if (d2 >= md*md || d2 < 0.001) continue;
+        const dist = Math.sqrt(d2), nx = dx/dist, ny = dy/dist;
+        const ov = (md-dist)*0.5;
+        a.x -= nx*ov; a.y -= ny*ov;
+        b.x += nx*ov; b.y += ny*ov;
         const dvx=b.vx-a.vx, dvy=b.vy-a.vy, dot=dvx*nx+dvy*ny;
-        if(dot<0){
-          const imp=dot*(1+RESTITUTION)*.5;
-          a.vx+=imp*nx; a.vy+=imp*ny; b.vx-=imp*nx; b.vy-=imp*ny;
+        if (dot < 0) {
+          const imp = dot*(1+REST)*0.5;
+          a.vx += imp*nx; a.vy += imp*ny;
+          b.vx -= imp*nx; b.vy -= imp*ny;
         }
       }
     }
   }
-
-  // Normalise: ke per ball, map to 0-1
-  totalKE = Math.min(1, (ke / BALL_N) * 0.012);
 }
 
 function draw() {
-  ctx.fillStyle='#07070c';
-  ctx.fillRect(0,0,W,H);
-  for(const b of balls){
-    ctx.globalAlpha=b.a;
-    ctx.fillStyle=b.fill;
-    ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#07070c';
+  ctx.fillRect(0, 0, W, H);
+  for (const b of balls) {
+    ctx.globalAlpha = b.a;
+    ctx.fillStyle   = b.fill;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.r, 0, Math.PI*2);
+    ctx.fill();
   }
-  ctx.globalAlpha=1;
+  ctx.globalAlpha = 1;
 }
 
-let lastT=null;
-function loop(ts) {
+function loop() {
   requestAnimationFrame(loop);
-  lastT=ts;
   physicsStep();
-  updateAudio(totalKE);  // continuous audio driven by kinetic energy
   draw();
 }
 
-// ═══════════════════════════════════════════════════════
-//  MOTION
-// ═══════════════════════════════════════════════════════
+// ── MOTION ────────────────────────────────────────────
 function onMotion(e) {
-  const a=e.accelerationIncludingGravity||{};
-  GX=Math.max(-.8,Math.min(.8, (a.x||0)*.058));
-  GY=Math.max(-.8,Math.min(.8,-(a.y||0)*.058));
+  const a = e.accelerationIncludingGravity || {};
+  GX = Math.max(-.8, Math.min(.8,  (a.x||0) * 0.058));
+  GY = Math.max(-.8, Math.min(.8, -(a.y||0) * 0.058));
 }
 
-// ═══════════════════════════════════════════════════════
-//  UI
-// ═══════════════════════════════════════════════════════
+// ── UI ────────────────────────────────────────────────
 document.getElementById('splash').addEventListener('click', async () => {
   initAudio();
   try {
-    if(typeof DeviceMotionEvent!=='undefined' &&
-       typeof DeviceMotionEvent.requestPermission==='function'){
-      const r=await DeviceMotionEvent.requestPermission();
-      if(r!=='granted') throw new Error('denied');
+    if (typeof DeviceMotionEvent !== 'undefined' &&
+        typeof DeviceMotionEvent.requestPermission === 'function') {
+      const r = await DeviceMotionEvent.requestPermission();
+      if (r !== 'granted') throw new Error('denied');
     }
-    window.addEventListener('devicemotion',onMotion,{passive:true});
-  } catch(e){ console.warn('Motion:',e.message); }
+    window.addEventListener('devicemotion', onMotion, { passive: true });
+  } catch(e) { console.warn('Motion:', e.message); }
   document.getElementById('splash').classList.add('gone');
   document.getElementById('strip').classList.add('show');
 });
 
-document.querySelectorAll('.chip').forEach(btn=>{
-  btn.addEventListener('click',()=>{
-    document.querySelectorAll('.chip').forEach(c=>c.classList.remove('active'));
+document.querySelectorAll('.chip').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
     btn.classList.add('active');
-    const m=btn.dataset.mode;
-    aMode=AUDIO_MODES[m]||AUDIO_MODES.maracas;
-    palFn=PALETTES[m]||PALETTES.maracas;
-    document.getElementById('mode-label').textContent=btn.textContent;
+    const m = btn.dataset.mode;
+    snd   = MODES_SND[m]  || MODES_SND.maracas;
+    palFn = PALETTES[m]   || PALETTES.maracas;
+    document.getElementById('mode-label').textContent = btn.textContent;
     recolor();
   });
 });
 
-document.getElementById('ic-mute').addEventListener('click',()=>{
-  muted=!muted;
-  if(master) master.gain.value=muted?0:0.8;
-  document.getElementById('ic-mute').textContent=muted?'✕':'♪';
-  document.getElementById('ic-mute').classList.toggle('on',!muted);
+document.getElementById('ic-mute').addEventListener('click', () => {
+  muted = !muted;
+  if (master) master.gain.value = muted ? 0 : 0.7;
+  document.getElementById('ic-mute').textContent = muted ? '✕' : '♪';
+  document.getElementById('ic-mute').classList.toggle('on', !muted);
 });
 
-document.getElementById('ic-reset').addEventListener('click',()=>initBalls());
+document.getElementById('ic-reset').addEventListener('click', () => initBalls());
 
-// ═══════════════════════════════════════════════════════
-//  BOOT
-// ═══════════════════════════════════════════════════════
+// ── BOOT ──────────────────────────────────────────────
 resize();
-requestAnimationFrame(loop);
+loop();
 </script>
 
 </body>

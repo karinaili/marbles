@@ -82,7 +82,7 @@ function initAudio() {
   const comp = AC.createDynamicsCompressor();
   comp.threshold.value=-18; comp.knee.value=10;
   comp.ratio.value=5; comp.attack.value=0.001; comp.release.value=0.10;
-  master = AC.createGain(); master.gain.value = 2.8;
+  master = AC.createGain(); master.gain.value = 3.5;
   master.connect(comp); comp.connect(AC.destination);
   // iOS speaker unlock
   const sb=AC.createBuffer(1,1,AC.sampleRate);
@@ -110,7 +110,7 @@ function click(speed, isWall) {
   const now = AC.currentTime;
 
   // Volume scales with impact speed, walls louder than ball-ball
-  const velScale = Math.min(1, speed * 0.045);
+  const velScale = Math.min(1, speed * 0.12);
   if(velScale < 0.04) return;
   const vol = m.vol * velScale * (isWall ? 1.0 : 0.55)
               * (0.55 + Math.random()*0.45); // per-grain variety
@@ -175,17 +175,17 @@ function bellClick(noteIdx, speed) {
 // flushQ() fires the loudest ones — max 12/frame.
 // This means sound IS the physics. No separate gesture layer.
 const SQ = [];
-const MAX_SND = 12;
+const MAX_SND = 25;
 
 // Per-pair cooldown prevents same collision firing every substep
 const pairCd = new Map();
-const WALL_CD = 28;
-const BALL_CD = 42;
+const WALL_CD = 0;   // no cooldown on walls — every hit counts
+const BALL_CD = 18;  // minimal cooldown on ball-ball
 
 function queueHit(key, cdMs, speed, isWall, noteIdx) {
   const now = performance.now();
   if (now - (pairCd.get(key)||0) < cdMs) return;
-  if (speed < 0.4) return;
+  if (speed < 0.08) return;
   pairCd.set(key, now);
   SQ.push({ speed, isWall, noteIdx });
 }

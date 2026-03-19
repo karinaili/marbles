@@ -14,7 +14,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#07070c;}
 canvas{position:fixed;inset:0;width:100%;height:100%;display:block;}
 #splash{position:fixed;inset:0;z-index:60;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:52px 48px;background:#07070c;transition:opacity .7s,visibility .7s;cursor:pointer;}
 #splash.gone{opacity:0;visibility:hidden;pointer-events:none;}
-.logo{font-family:'Cormorant Garamond',serif;font-style:italic;font-weight:300;font-size:60px;letter-spacing:.05em;color:rgba(255,255,255,.88);text-shadow:0 0 60px rgba(255,255,255,.08);}
+.logo{font-family:'Cormorant Garamond',serif;font-style:italic;font-weight:300;font-size:60px;letter-spacing:.05em;color:rgba(255,255,255,.88);}
 .sub{font-family:'DM Mono',monospace;font-weight:300;font-size:9px;letter-spacing:.24em;text-transform:uppercase;color:rgba(255,255,255,.2);text-align:center;line-height:2.3;}
 .tap-hint{margin-top:16px;width:72px;height:72px;border-radius:50%;border:1px solid rgba(255,255,255,.18);display:flex;align-items:center;justify-content:center;font-family:'DM Mono',monospace;font-weight:300;font-size:8.5px;letter-spacing:.18em;text-transform:uppercase;color:rgba(255,255,255,.3);animation:pulse 2.2s ease-in-out infinite;}
 @keyframes pulse{0%,100%{transform:scale(1);border-color:rgba(255,255,255,.18);}50%{transform:scale(1.06);border-color:rgba(255,255,255,.36);}}
@@ -42,7 +42,7 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;}
     <button class="chip" data-mode="shaker">shaker</button>
     <button class="chip" data-mode="rain">rain stick</button>
     <button class="chip" data-mode="seeds">seeds</button>
-    <button class="chip" data-mode="shells">shells</button>
+    <button class="chip" data-mode="bells">bells</button>
   </div>
   <div class="bottom-row">
     <button class="ic on" id="ic-mute">♪</button>
@@ -54,208 +54,254 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block;}
 <script>
 'use strict';
 
-// ── AUDIO ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════
+//  AUDIO
+// ═══════════════════════════════════════════════════════
 let AC = null, master = null, muted = false;
 let noiseBuf = null;
 
-// Mode sound params: vol (0-1), freq (Hz), Q, dur (seconds)
-// All tuned to be tiny, dry, immediate — like seeds in a shaker
-const MODES_SND = {
-  maracas: { vol:0.22, freq:4000, q:1.6, dur:0.009 },
-  shaker:  { vol:0.18, freq:6800, q:1.1, dur:0.006 },
-  rain:    { vol:0.19, freq:1200, q:0.55,dur:0.022 },
-  seeds:   { vol:0.21, freq:2600, q:2.8, dur:0.011 },
-  shells:  { vol:0.16, freq:7200, q:3.8, dur:0.007 },
-};
-let snd = MODES_SND.maracas;
+// Pentatonic scale freqs (C5 pentatonic + octave above) for bells mode
+const PENTA = [523.25, 587.33, 659.25, 783.99, 880.00,
+               1046.5, 1174.7, 1318.5, 1568.0, 1760.0];
 
 function initAudio() {
   if (AC) return;
   AC = new (window.AudioContext || window.webkitAudioContext)();
 
-  // Gentle compressor — just glue, not crush
   const comp = AC.createDynamicsCompressor();
   comp.threshold.value = -18; comp.knee.value = 14;
   comp.ratio.value = 3.5;    comp.attack.value = 0.005;
   comp.release.value = 0.2;
 
   master = AC.createGain();
-  master.gain.value = 0.7;
+  master.gain.value = 0.65;
   master.connect(comp);
   comp.connect(AC.destination);
 
-  // iOS speaker unlock — silent buffer on user gesture
+  // iOS speaker unlock
   const sb = AC.createBuffer(1, 1, AC.sampleRate);
   const ss = AC.createBufferSource();
   ss.buffer = sb; ss.connect(AC.destination); ss.start(0);
   if (AC.state === 'suspended') AC.resume();
 
-  // Build short pink-ish noise buffer (60ms)
+  // Pink-ish noise buffer (60ms)
   const sr = AC.sampleRate;
-  const len = Math.floor(sr * 0.06);
-  noiseBuf = AC.createBuffer(1, len, sr);
+  noiseBuf = AC.createBuffer(1, Math.floor(sr * 0.06), sr);
   const d = noiseBuf.getChannelData(0);
-  let b0=0, b1=0, b2=0;
-  for (let i = 0; i < len; i++) {
-    const w = Math.random() * 2 - 1;
-    b0 = 0.99886*b0 + w*0.0555;
-    b1 = 0.96900*b1 + w*0.1538;
-    b2 = 0.57000*b2 + w*0.5330;
-    d[i] = (b0 + b1 + b2 + w*0.18) * 0.14;
+  let b0=0,b1=0,b2=0;
+  for (let i = 0; i < d.length; i++) {
+    const w = Math.random()*2-1;
+    b0=.99886*b0+w*.0555; b1=.96900*b1+w*.1538; b2=.57000*b2+w*.5330;
+    d[i]=(b0+b1+b2+w*.18)*.13;
   }
 }
 
-// Tiny click: noise snippet → bandpass → instant-on exponential decay
-function click(vel) {
+// ── Noise click (maracas / shaker / rain / seeds) ───
+// vol, freq, Q, dur all tiny
+const NOISE_MODES = {
+  maracas: { vol:0.20, freq:4200, q:1.6, dur:0.009 },
+  shaker:  { vol:0.17, freq:6800, q:1.1, dur:0.006 },
+  rain:    { vol:0.18, freq:1200, q:0.55,dur:0.022 },
+  seeds:   { vol:0.19, freq:2600, q:2.8, dur:0.011 },
+};
+
+function noiseClick(p, vel) {
   if (!AC || !noiseBuf || muted) return;
   const now = AC.currentTime;
-
+  const off = Math.random() * 0.04;
   const src = AC.createBufferSource();
   src.buffer = noiseBuf;
-  // Random offset in noise buffer so each click sounds unique
-  const off = Math.random() * 0.04;
-  src.loopStart = off;
-  src.loopEnd   = off + 0.008 + Math.random() * 0.004;
+  src.loopStart = off; src.loopEnd = off + 0.007 + Math.random()*.003;
   src.loop = true;
-  src.playbackRate.value = 0.82 + Math.random() * 0.38;
+  src.playbackRate.value = 0.82 + Math.random()*0.36;
 
   const bp = AC.createBiquadFilter();
   bp.type = 'bandpass';
-  bp.frequency.value = snd.freq * (0.78 + vel * 0.44) * (0.94 + Math.random() * 0.12);
-  bp.Q.value = snd.q * (0.7 + Math.random() * 0.5);
+  bp.frequency.value = p.freq * (0.8 + vel*0.4) * (0.94 + Math.random()*.12);
+  bp.Q.value = p.q * (0.7 + Math.random()*.5);
 
   const env = AC.createGain();
-  const vol = snd.vol * (0.25 + vel * 0.75);
-  const dur = snd.dur * (0.6 + vel * 0.7);
-
-  // No ramp-up — instant start, pure exponential decay
+  const vol = p.vol * (0.25 + vel*0.75);
+  const dur = p.dur * (0.6 + vel*0.7);
   env.gain.setValueAtTime(vol, now);
   env.gain.exponentialRampToValueAtTime(0.0001, now + dur);
 
   src.connect(bp); bp.connect(env); env.connect(master);
-  src.start(now);
-  src.stop(now + dur + 0.001);
+  src.start(now); src.stop(now + dur + 0.001);
 }
 
-// Per-ball wall cooldown
+// ── Bell / chime (melodic mode) ─────────────────────
+// FM synthesis: carrier sine + modulator → warm bell tone
+// Each ball gets its own note from pentatonic scale
+function bellRing(noteIdx, vel, isWall) {
+  if (!AC || muted) return;
+  const now  = AC.currentTime;
+  const freq = PENTA[noteIdx % PENTA.length];
+
+  // Modulator → carrier (FM)
+  const mod  = AC.createOscillator();
+  const modG = AC.createGain();
+  const car  = AC.createOscillator();
+  const carE = AC.createGain();
+
+  mod.type = 'sine';
+  mod.frequency.value = freq * 2.756; // inharmonic ratio → bell colour
+
+  car.type = 'sine';
+  car.frequency.value = freq;
+
+  // FM depth: more vel = more brightness (more FM)
+  const fmDepth = freq * (0.5 + vel * 2.5);
+  modG.gain.setValueAtTime(fmDepth, now);
+  modG.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+
+  mod.connect(modG); modG.connect(car.frequency);
+
+  // Volume envelope: instant attack, long decay (bell lingering)
+  const vol = (isWall ? 0.18 : 0.10) * (0.3 + vel * 0.7);
+  const dec = isWall ? (0.4 + vel * 0.5) : (0.2 + vel * 0.3);
+  carE.gain.setValueAtTime(vol, now);
+  carE.gain.exponentialRampToValueAtTime(0.0001, now + dec);
+
+  car.connect(carE); carE.connect(master);
+  mod.start(now); car.start(now);
+  mod.stop(now + dec + 0.05); car.stop(now + dec + 0.05);
+}
+
+// ── Mode state ──────────────────────────────────────
+let modeName = 'maracas';
+
+// ── Cooldowns ───────────────────────────────────────
 const wallCd = new Map();
-const WALL_CD_MS = 52;
+const ballCd = new Map();
+const WALL_CD_MS = 55;
+const BALL_CD_MS = 70; // slightly longer for ball-ball
 
 function wallHit(bid, side, speed) {
   if (muted || !AC) return;
   const key = bid * 4 + side;
   const now = performance.now();
-  if (now - (wallCd.get(key) || 0) < WALL_CD_MS) return;
+  if (now - (wallCd.get(key)||0) < WALL_CD_MS) return;
   wallCd.set(key, now);
   const vel = Math.min(1, speed * 0.09);
-  if (vel < 0.07) return;
-  click(vel);
+  if (vel < 0.06) return;
+
+  if (modeName === 'bells') {
+    bellRing(bid, vel, true);
+  } else {
+    noiseClick(NOISE_MODES[modeName] || NOISE_MODES.maracas, vel);
+  }
 }
 
-// ── PHYSICS ───────────────────────────────────────────
+function ballHit(aid, bid, speed) {
+  if (muted || !AC) return;
+  const key = Math.min(aid,bid) * 10000 + Math.max(aid,bid);
+  const now = performance.now();
+  if (now - (ballCd.get(key)||0) < BALL_CD_MS) return;
+  ballCd.set(key, now);
+  const vel = Math.min(1, speed * 0.07);
+  if (vel < 0.07) return;
+
+  if (modeName === 'bells') {
+    // Ball-ball: play the softer note (average of two ball indices)
+    bellRing(Math.floor((aid + bid) / 2), vel * 0.7, false);
+  } else {
+    // Ball-ball: same sound but quieter
+    const p = { ...( NOISE_MODES[modeName] || NOISE_MODES.maracas ) };
+    p.vol *= 0.55; // noticeably quieter than wall hits
+    p.dur *= 0.75;
+    noiseClick(p, vel);
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  PHYSICS
+// ═══════════════════════════════════════════════════════
 const cv  = document.getElementById('cv');
 const ctx = cv.getContext('2d');
-let W = 0, H = 0, dpr = 1;
-let GX = 0, GY = 0.35;
+let W=0, H=0, dpr=1;
+let GX=0, GY=0.35;
 
-const BALL_N    = 60;
-const REST      = 0.50;
-const FRIC      = 0.992;
-const SUBSTEPS  = 3;
+const BALL_N   = 90;   // more balls, smaller
+const REST     = 0.50;
+const FRIC     = 0.992;
+const SUBSTEPS = 3;
 
 let balls = [];
 
 const PALETTES = {
-  maracas:()=>({h:28 +Math.random()*22,s:35,l:65+Math.random()*16}),
-  shaker: ()=>({h:210+Math.random()*28,s:25,l:60+Math.random()*18}),
+  maracas:()=>({h:28 +Math.random()*22,s:33,l:64+Math.random()*16}),
+  shaker: ()=>({h:210+Math.random()*28,s:23,l:60+Math.random()*18}),
   rain:   ()=>({h:188+Math.random()*24,s:20,l:50+Math.random()*18}),
-  seeds:  ()=>({h:82 +Math.random()*28,s:24,l:53+Math.random()*16}),
-  shells: ()=>({h:12 +Math.random()*18,s:32,l:68+Math.random()*14}),
+  seeds:  ()=>({h:82 +Math.random()*28,s:22,l:52+Math.random()*16}),
+  bells:  ()=>({h:46 +Math.random()*30,s:45,l:72+Math.random()*16}),
 };
 let palFn = PALETTES.maracas;
 
 function mkBall(i) {
-  const r = 3.5 + Math.random() * 4;
+  const r = 2 + Math.random() * 3.5;  // smaller: 2–5.5px
   const p = palFn();
   return {
     id:i,
     x: r + Math.random()*(W - r*2),
     y: r + Math.random()*(H * 0.6),
-    vx: (Math.random()-.5)*3,
-    vy: (Math.random()-.5)*3,
+    vx:(Math.random()-.5)*3,
+    vy:(Math.random()-.5)*3,
     r,
-    fill: `hsl(${p.h},${p.s}%,${p.l}%)`,
-    a: 0.72 + Math.random()*0.28,
+    noteIdx: Math.floor(Math.random() * PENTA.length), // fixed note per ball
+    fill:`hsl(${p.h},${p.s}%,${p.l}%)`,
+    a: 0.70 + Math.random()*0.30,
   };
 }
 
 function initBalls() {
-  balls = [];
-  for (let i = 0; i < BALL_N; i++) balls.push(mkBall(i));
+  balls=[];
+  for (let i=0; i<BALL_N; i++) balls.push(mkBall(i));
 }
-
 function recolor() {
-  balls.forEach(b => { const p = palFn(); b.fill = `hsl(${p.h},${p.s}%,${p.l}%)`; });
+  balls.forEach(b=>{ const p=palFn(); b.fill=`hsl(${p.h},${p.s}%,${p.l}%)`; });
 }
 
 function resize() {
-  dpr = Math.min(window.devicePixelRatio || 1, 2);
-  W = window.innerWidth; H = window.innerHeight;
-  cv.width = W*dpr; cv.height = H*dpr;
-  cv.style.width = W+'px'; cv.style.height = H+'px';
+  dpr=Math.min(window.devicePixelRatio||1,2);
+  W=window.innerWidth; H=window.innerHeight;
+  cv.width=W*dpr; cv.height=H*dpr;
+  cv.style.width=W+'px'; cv.style.height=H+'px';
   ctx.setTransform(dpr,0,0,dpr,0,0);
   initBalls();
 }
-window.addEventListener('resize', ()=>{ ctx.setTransform(1,0,0,1,0,0); resize(); });
+window.addEventListener('resize',()=>{ ctx.setTransform(1,0,0,1,0,0); resize(); });
 
 function physicsStep() {
-  for (let s = 0; s < SUBSTEPS; s++) {
-    // Integrate
+  for (let s=0; s<SUBSTEPS; s++) {
     for (const b of balls) {
-      b.vx = (b.vx + GX) * FRIC;
-      b.vy = (b.vy + GY) * FRIC;
-      b.x += b.vx;
-      b.y += b.vy;
+      b.vx=(b.vx+GX)*FRIC; b.vy=(b.vy+GY)*FRIC;
+      b.x+=b.vx; b.y+=b.vy;
     }
 
-    // Wall collisions — each produces a sound
     for (const b of balls) {
-      if (b.x - b.r < 0) {
-        const sp = Math.abs(b.vx);
-        b.x = b.r; b.vx = sp * REST;
-        wallHit(b.id, 0, sp);
-      } else if (b.x + b.r > W) {
-        const sp = Math.abs(b.vx);
-        b.x = W - b.r; b.vx = -sp * REST;
-        wallHit(b.id, 1, sp);
-      }
-      if (b.y - b.r < 0) {
-        const sp = Math.abs(b.vy);
-        b.y = b.r; b.vy = sp * REST;
-        wallHit(b.id, 2, sp);
-      } else if (b.y + b.r > H) {
-        const sp = Math.abs(b.vy);
-        b.y = H - b.r; b.vy = -sp * REST;
-        wallHit(b.id, 3, sp);
-      }
+      if (b.x-b.r<0)    { const sp=Math.abs(b.vx); b.x=b.r;   b.vx= sp*REST; wallHit(b.id,0,sp); }
+      else if(b.x+b.r>W){ const sp=Math.abs(b.vx); b.x=W-b.r; b.vx=-sp*REST; wallHit(b.id,1,sp); }
+      if (b.y-b.r<0)    { const sp=Math.abs(b.vy); b.y=b.r;   b.vy= sp*REST; wallHit(b.id,2,sp); }
+      else if(b.y+b.r>H){ const sp=Math.abs(b.vy); b.y=H-b.r; b.vy=-sp*REST; wallHit(b.id,3,sp); }
     }
 
-    // Ball-ball collisions (silent — wall hits carry the music)
-    for (let i = 0; i < balls.length; i++) {
-      for (let j = i+1; j < balls.length; j++) {
-        const a = balls[i], b = balls[j];
-        const dx = b.x-a.x, dy = b.y-a.y;
-        const d2 = dx*dx+dy*dy, md = a.r+b.r;
-        if (d2 >= md*md || d2 < 0.001) continue;
-        const dist = Math.sqrt(d2), nx = dx/dist, ny = dy/dist;
-        const ov = (md-dist)*0.5;
-        a.x -= nx*ov; a.y -= ny*ov;
-        b.x += nx*ov; b.y += ny*ov;
+    for (let i=0; i<balls.length; i++) {
+      for (let j=i+1; j<balls.length; j++) {
+        const a=balls[i], b=balls[j];
+        const dx=b.x-a.x, dy=b.y-a.y;
+        const d2=dx*dx+dy*dy, md=a.r+b.r;
+        if (d2>=md*md||d2<.001) continue;
+        const dist=Math.sqrt(d2), nx=dx/dist, ny=dy/dist;
+        const ov=(md-dist)*.5;
+        a.x-=nx*ov; a.y-=ny*ov; b.x+=nx*ov; b.y+=ny*ov;
         const dvx=b.vx-a.vx, dvy=b.vy-a.vy, dot=dvx*nx+dvy*ny;
-        if (dot < 0) {
-          const imp = dot*(1+REST)*0.5;
-          a.vx += imp*nx; a.vy += imp*ny;
-          b.vx -= imp*nx; b.vy -= imp*ny;
+        if (dot<0) {
+          const imp=dot*(1+REST)*.5;
+          const speed=Math.abs(dot);
+          a.vx+=imp*nx; a.vy+=imp*ny;
+          b.vx-=imp*nx; b.vy-=imp*ny;
+          ballHit(a.id, b.id, speed);
         }
       }
     }
@@ -263,16 +309,16 @@ function physicsStep() {
 }
 
 function draw() {
-  ctx.fillStyle = '#07070c';
-  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle='#07070c';
+  ctx.fillRect(0,0,W,H);
   for (const b of balls) {
-    ctx.globalAlpha = b.a;
-    ctx.fillStyle   = b.fill;
+    ctx.globalAlpha=b.a;
+    ctx.fillStyle=b.fill;
     ctx.beginPath();
-    ctx.arc(b.x, b.y, b.r, 0, Math.PI*2);
+    ctx.arc(b.x,b.y,b.r,0,Math.PI*2);
     ctx.fill();
   }
-  ctx.globalAlpha = 1;
+  ctx.globalAlpha=1;
 }
 
 function loop() {
@@ -281,50 +327,54 @@ function loop() {
   draw();
 }
 
-// ── MOTION ────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════
+//  MOTION
+// ═══════════════════════════════════════════════════════
 function onMotion(e) {
-  const a = e.accelerationIncludingGravity || {};
-  GX = Math.max(-.8, Math.min(.8,  (a.x||0) * 0.058));
-  GY = Math.max(-.8, Math.min(.8, -(a.y||0) * 0.058));
+  const a=e.accelerationIncludingGravity||{};
+  GX=Math.max(-.8,Math.min(.8, (a.x||0)*.058));
+  GY=Math.max(-.8,Math.min(.8,-(a.y||0)*.058));
 }
 
-// ── UI ────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════
+//  UI
+// ═══════════════════════════════════════════════════════
 document.getElementById('splash').addEventListener('click', async () => {
   initAudio();
   try {
-    if (typeof DeviceMotionEvent !== 'undefined' &&
-        typeof DeviceMotionEvent.requestPermission === 'function') {
-      const r = await DeviceMotionEvent.requestPermission();
-      if (r !== 'granted') throw new Error('denied');
+    if (typeof DeviceMotionEvent!=='undefined' &&
+        typeof DeviceMotionEvent.requestPermission==='function') {
+      const r=await DeviceMotionEvent.requestPermission();
+      if (r!=='granted') throw new Error('denied');
     }
-    window.addEventListener('devicemotion', onMotion, { passive: true });
-  } catch(e) { console.warn('Motion:', e.message); }
+    window.addEventListener('devicemotion',onMotion,{passive:true});
+  } catch(e){ console.warn('Motion:',e.message); }
   document.getElementById('splash').classList.add('gone');
   document.getElementById('strip').classList.add('show');
 });
 
-document.querySelectorAll('.chip').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+document.querySelectorAll('.chip').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    document.querySelectorAll('.chip').forEach(c=>c.classList.remove('active'));
     btn.classList.add('active');
-    const m = btn.dataset.mode;
-    snd   = MODES_SND[m]  || MODES_SND.maracas;
-    palFn = PALETTES[m]   || PALETTES.maracas;
-    document.getElementById('mode-label').textContent = btn.textContent;
+    const m=btn.dataset.mode;
+    modeName=m;
+    palFn=PALETTES[m]||PALETTES.maracas;
+    document.getElementById('mode-label').textContent=btn.textContent;
     recolor();
   });
 });
 
-document.getElementById('ic-mute').addEventListener('click', () => {
-  muted = !muted;
-  if (master) master.gain.value = muted ? 0 : 0.7;
-  document.getElementById('ic-mute').textContent = muted ? '✕' : '♪';
-  document.getElementById('ic-mute').classList.toggle('on', !muted);
+document.getElementById('ic-mute').addEventListener('click',()=>{
+  muted=!muted;
+  if (master) master.gain.value=muted?0:0.65;
+  document.getElementById('ic-mute').textContent=muted?'✕':'♪';
+  document.getElementById('ic-mute').classList.toggle('on',!muted);
 });
 
-document.getElementById('ic-reset').addEventListener('click', () => initBalls());
+document.getElementById('ic-reset').addEventListener('click',()=>initBalls());
 
-// ── BOOT ──────────────────────────────────────────────
+// BOOT
 resize();
 loop();
 </script>
